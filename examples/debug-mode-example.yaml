@@ -1,0 +1,32 @@
+# Debug Mode Example
+# This example demonstrates how to use debug mode for interactive testing
+# Run with: sitometres run examples/debug-mode-example.yaml --debug
+
+app: tip_jar
+with: [medusa_core]
+timeout: 30s
+
+ignore_calls:
+  - "medusa_core.pendingRequests"
+
+steps:
+  - name: opening the app
+    open: tip_jar
+    expect:
+      text: ["Chain", "Connect with Medusa"]
+      state: "root.phase === 'idle'"
+
+  - name: inspect before connecting
+    comment: "# breakpoint: check state before connection"
+    click: "Connect with Medusa"
+    expect:
+      text:
+        - text: "approve the connection"
+          match: contains
+      state: "root.phase === 'connecting'"
+      calls: ["medusa_core.connectRequest"]
+
+  - name: verify connection request
+    expect:
+      calls: ["medusa_core.connectRequest"]
+      calls_succeed: true

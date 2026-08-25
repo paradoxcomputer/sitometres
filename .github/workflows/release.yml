@@ -1,0 +1,96 @@
+# Cutting a release. Nothing here runs until a tag is pushed:
+#
+#   npm version <patch|minor|major>   # writes package.json and tags vX.Y.Z
+#   git push --follow-tags
+#
+# It typechecks, tests, refuses a tag that disagrees with package.json, then
+# publishes to npm with provenance and opens a GitHub Release with generated
+# notes.
+#
+# Needs one repository secret: NPM_TOKEN, an npm automation token with publish
+# rights. Without it the publish step is the only thing that fails, after the
+# gates have already passed.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  # The tarball is platform-independent — pure JS, one pure-JS dependency — but
+  # the code branches on darwin for the Basecamp user-dir and the .lgx variant.
+  # Gating the publish on both means a macOS regression cannot reach the
+  # registry, which ubuntu-only CI would have let through.
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["20.x", "22.x"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # `contents: write` is for creating the GitHub Release, not for pushing.
+      contents: write
+      # For npm provenance, so a consumer can verify which commit built the
+      # tarball they installed.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: typecheck
+        run: npm run lint
+      - name: test
+        run: npm test
+      # `--help` prints the repository URL, and a test pins it to package.json.
+      # Whether those addresses actually resolve can only be known here.
+      - name: the declared addresses resolve
+        run: |
+          node -p "
+            const p = require('./package.json');
+            [p.homepage, p.bugs && p.bugs.url, p.repository && p.repository.url]
+              .filter(Boolean)
+              .map(u => u.replace(/^git\\+/, '').replace(/\\.git$/, '').replace(/#.*$/, ''))
+              .join('\\n')
+          " | sort -u | while read -r url; do
+            code="$(curl -sSL -o /dev/null -w '%{http_code}' "$url")"
+            echo "$code  $url"
+            [ "$code" = "200" ] || { echo "does not resolve: $url"; exit 1; }
+          done
+      # The tag and the manifest must agree, or `--version` and every machine
+      # report claim a number nothing else uses.
+      - name: the tag matches the version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $pkg"
+            exit 1
+          fi
+      - name: publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: github release
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

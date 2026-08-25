@@ -1,0 +1,98 @@
+# Setup profile: get the Medusa wallet past its front door.
+#
+# medusa_ui opens on "Create your wallet" and almost nothing else exists until
+# one has been made — a crawl of that screen finds four controls and calls it a
+# day. This walks through onboarding so the crawl explores the actual wallet.
+#
+# Run automatically by `sitometres medusa_ui`; disable with --no-setup.
+#
+# It runs against sitometres' throwaway $HOME, so the wallet it creates is
+# discarded with the run. Under --real-home your wallet already exists and this
+# profile does not apply — unlock it with --wallet-password instead.
+
+app: medusa_ui
+timeout: 90s
+
+# Load-bearing, not decoration: this list is what the crawl uses to tell a
+# background poll from something a click caused. medusa_ui asks for
+# pendingRequests every 800ms, which would otherwise land in every click's
+# evidence window and make an inert control report `ran`.
+ignore_calls:
+  - "medusa_core.pendingRequests"
+  - "medusa_core.getJob"
+
+steps:
+  - name: the wallet asks to be created
+    wait_for:
+      text: ["Create your wallet"]
+
+  # Two password fields, neither with an objectName, so they are addressed
+  # positionally. `sitometres inspect medusa_ui` prints these selectors.
+  # `secret: true` keeps the value out of the terminal, the JSON report and the
+  # JUnit file. This one is a throwaway literal, but a profile is the thing a
+  # reader copies, and the copy will not be.
+  - name: choose a password
+    type:
+      into: { type: "Pre64TextInput", nth: 0 }
+      text: "sitometres-throwaway"
+      secret: true
+
+  - name: confirm it
+    type:
+      into: { type: "Pre64TextInput", nth: 1 }
+      text: "sitometres-throwaway"
+      secret: true
+
+  # The assertion that matters is the recovery phrase appearing, not the call.
+  # `calls_succeed:` catches a transport hang, NOT a module that answers with an
+  # error: medusa renders "Create failed: wallet command timed out" — observed on
+  # a machine whose zone would not connect — and the log says nothing at all. The
+  # step used to pass in exactly that case, and everything after it then ran
+  # against the wrong screen. Asserting the outcome on screen is the only thing
+  # that catches it, which is what the docs mean by "name the outcome in a spec".
+  - name: create the wallet
+    click: "Create wallet"
+    timeout: 90s
+    expect:
+      calls: ["medusa_core.createEncryptedWallet"]
+      calls_succeed: true
+      text: ["Back up your recovery phrase"]
+      not_text: [{ text: "Create failed", match: contains }]
+
+  # Onboarding is not finished until this is dismissed.
+  - name: acknowledge the backup
+    click:
+      text: "open my wallet"
+      match: contains
+    timeout: 60s
+
+  # Creating a wallet does not open it: medusa encrypts the store and asks for
+  # the password again. The profile used to stop here and assert only that the
+  # backup screen was gone — which the UNLOCK screen satisfies too, so it claimed
+  # "the wallet itself is open" while the wallet was locked, and a crawl behind it
+  # explored the unlock dialog. Verified against a real medusa_ui: the app was
+  # sitting on "Encrypted wallet created - unlock with the password you just
+  # chose" with every profile step reported green.
+  - name: the wallet asks to be unlocked
+    wait_for:
+      text: ["Unlock"]
+    timeout: 60s
+
+  - name: give it the password again
+    type:
+      into: { type: "Pre64TextInput", nth: 0 }
+      text: "sitometres-throwaway"
+      secret: true
+
+  - name: unlock it
+    click: "Unlock"
+    timeout: 60s
+
+  # A negative, and deliberately labelled as the weaker check it is: this proves
+  # the unlock screen is gone, not that the wallet is usable. Replace it with a
+  # label that only the open wallet renders — or a `state:` expression against
+  # medusa's root — the first time anyone can observe one. Do not guess at one.
+  - name: the unlock screen is gone
+    wait_for:
+      not_text: ["Unlock", "Create your wallet"]
+    timeout: 60s

@@ -1,0 +1,64 @@
+# A worked sitometres spec, written against the real tip_jar sample app.
+#
+#   npx sitometres run examples/tip_jar.yaml --app-dir ~/.local/share/Logos/LogosBasecampDev
+#
+# It exercises all three assertion families deliberately, so you can see what
+# each one is worth on your own Basecamp build.
+
+app: tip_jar
+with: [medusa_core]
+timeout: 20s
+
+# medusa_ui polls this every 800ms; without ignoring it, every window is noise.
+ignore_calls: ["medusa_core.pendingRequests"]
+
+steps:
+  - name: the app opens and offers a chain
+    open: tip_jar
+    expect:
+      text:
+        - "Chain"
+        - "Connect with Medusa"
+      # `state` is evaluated inside your app's QML root. It is the only family
+      # that works on every Basecamp build, so put load-bearing checks here.
+      state: "root.phase === 'idle'"
+
+  - name: picking a chain selects it
+    click: "Logos public testnet"
+    expect:
+      text: ["https://testnet.lez.logos.co/"]
+      state: "root.zoneIdx === 1"
+
+  - name: connecting asks the wallet to approve
+    click: "Connect with Medusa"
+    expect:
+      # What the user sees. Note the real label has a typographic ellipsis -
+      # sitometres normalises it, so plain "..." would match too.
+      text:
+        - text: "approve the connection"
+          match: contains
+      state: "root.phase === 'connecting'"
+      # Proof from the log that the click reached the backend.
+      calls: ["medusa_core.connectRequest"]
+      # Catches a hung or timed-out call. It cannot see an error the module
+      # returns in its payload - assert those with `state:` above.
+      calls_succeed: true
+
+  # Opt in to the stricter bar: missing image assets, binding loops and anchors
+  # inside a Layout are warnings rather than errors, so `no_errors` lets them
+  # through by design.
+  - name: the connect screen renders cleanly
+    wait_for:
+      text:
+        - text: "approve the connection"
+          match: contains
+    expect:
+      no_warnings: true
+
+  - name: cancelling returns to idle
+    click: "Cancel"
+    expect:
+      state: "root.phase === 'idle'"
+      not_text:
+        - text: "approve the connection"
+          match: contains

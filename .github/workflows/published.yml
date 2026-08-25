@@ -1,0 +1,67 @@
+# Does the thing on the registry actually work?
+#
+# ci.yml proves the tarball built from this checkout installs and runs. That is
+# not the same claim as "the published package works": a release can be cut from
+# a different tree, or published by hand. This installs what npm is really
+# serving, on both platforms, and asks it to do its job.
+#
+# Runs on demand, and weekly — a dependency resolving differently later is
+# exactly the failure this catches.
+name: published
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version to check (default: latest)"
+        required: false
+        default: "latest"
+  schedule:
+    - cron: "0 7 * * 1"
+
+jobs:
+  install:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ["20.x", "22.x"]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: install from the registry and run it
+        shell: bash
+        run: |
+          set -euo pipefail
+          want="${{ github.event.inputs.version || 'latest' }}"
+          work="$(mktemp -d)"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "@paradoxcomputer/sitometres@${want}" >/dev/null
+          pkg=node_modules/@paradoxcomputer/sitometres
+
+          # The version it reports must be the version npm served, or the
+          # manifest lookup has broken the way scoping the package once did.
+          served="$(node -p "require('./$pkg/package.json').version")"
+          got="$(npx sitometres --version)"
+          echo "npm served $served, the CLI reports $got, on $(uname -s)"
+          test "$got" = "$served"
+
+          # It must run, not merely resolve.
+          npx sitometres --help | grep -q 'APP OPTIONS'
+          npx sitometres doctor >/dev/null 2>&1 || true
+
+          # Runtime files that `files` could silently drop.
+          test -f "$pkg/SKILL.md"
+          node --input-type=module -e "
+            import { profilesDir } from '@paradoxcomputer/sitometres';
+            import fs from 'node:fs';
+            const d = profilesDir();
+            if (!fs.existsSync(d + '/medusa_ui.yaml')) {
+              console.error('shipped profile missing from the published package');
+              process.exit(1);
+            }
+          "

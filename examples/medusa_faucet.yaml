@@ -1,0 +1,79 @@
+# Claim from the Medusa faucet, and prove the tokens actually arrived.
+#
+# This is the shape to copy when what you care about is an OUTCOME rather than a
+# click landing. `sitometres medusa_ui` alone would grade the faucet button
+# `ran` — a call was dispatched and nothing complained — which is not the same
+# as "the claim paid out", because LogosQmlBridge hands the module's answer back
+# to QML and logs nothing. The three assertions below each prove a different
+# thing, and only the last two are about the outcome.
+#
+# Run it:
+#
+#   sitometres run examples/medusa_faucet.yaml --junit faucet.xml
+#
+# The wallet gate is handled by profiles/medusa_ui.yaml, which is picked up
+# automatically — it creates a wallet against the run's throwaway $HOME and
+# unlocks it, so every run starts from a fresh account with no faucet cooldown.
+# `--no-setup` skips it if you would rather drive an existing wallet with
+# `--wallet-password`.
+#
+# WHAT THIS NEEDS THAT SITOMETRES CANNOT PROVIDE: a zone that connects. The
+# faucet is an on-chain program, so a run against a zone stuck on
+# "· Connecting…" fails at the first step below rather than at the claim — which
+# is the honest place for it to fail. If you see medusa render
+# "Create failed: wallet command timed out" during setup, that is the same
+# problem one screen earlier.
+
+app: medusa_ui
+with: [medusa_core]
+
+# The faucet is two on-chain halves (LEZ, then tokens) and either can be slow.
+# The default 30s is a step budget, not a chain's patience.
+timeout: 120s
+
+# medusa_ui polls these constantly; without the list every step's evidence
+# window fills with them and an inert control looks like it did something.
+ignore_calls:
+  - "medusa_core.pendingRequests"
+  - "medusa_core.getJob"
+
+steps:
+  - name: the wallet is open
+    open: medusa_ui
+
+  # `state:` against the app's own root, which is the only assertion family that
+  # works on every build. `faucetOnChainReady` is medusa's own record of
+  # faucetStatus() answering `available` for the selected zone, so this asserts
+  # the precondition rather than discovering it at the claim.
+  - name: this zone has a faucet, and it is up
+    wait_for:
+      state: "root.faucetOnChainReady === true"
+    timeout: 90s
+
+  # Two spaces between the emoji and the word in medusa's own label, so match on
+  # a substring rather than pasting a string whose whitespace you cannot see.
+  - name: claiming asks the backend to run the faucet program
+    click: { text: "Faucet", match: contains }
+    expect:
+      calls: ["medusa_core.startFaucet"]
+      # Proves it reached the module. NOT that it paid out — see below.
+      calls_succeed: true
+
+  # The outcome, in the app's own words. medusa's settleFaucetClaim() writes one
+  # summary line when both halves are terminal: "received 150 LEZ" on a payout.
+  # This is the assertion that makes the run mean something; without it the spec
+  # proves only that a button was wired up.
+  - name: the claim paid out
+    wait_for:
+      text: [{ text: "received", match: contains }]
+    timeout: 120s
+
+  # And the claim really finished rather than the text being mid-flight:
+  # faucetClaim is set for the duration and nulled by settleFaucetClaim().
+  #
+  # A cooldown or an empty treasury is a GOOD outcome in medusa's own reading,
+  # but it is not a payout — so if you are testing a wallet that has claimed
+  # before, drop the step above and assert this one alone.
+  - name: nothing is still in flight
+    expect:
+      state: "root.faucetClaim === null"

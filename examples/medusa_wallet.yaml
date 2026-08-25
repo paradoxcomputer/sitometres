@@ -1,0 +1,53 @@
+# Testing the Medusa wallet's onboarding flow.
+#
+#   npx sitometres run examples/medusa_wallet.yaml
+#
+# No environment setup needed: sitometres gives the app a throwaway $HOME, and
+# medusa_core resolves its wallet under $HOME. With an empty wallet, medusa_ui
+# opens on "Create your wallet", which is what this spec drives. Pass
+# --real-home if you ever want to run this against your actual wallet.
+
+app: medusa_ui
+with: [medusa_core]
+timeout: 60s
+
+# medusa_ui polls this every 800ms - it is over half of all call traffic.
+ignore_calls:
+  - "medusa_core.pendingRequests"
+  - "medusa_core.getJob"
+
+steps:
+  - name: the wallet opens on the create-wallet screen
+    open: medusa_ui
+    expect:
+      text:
+        - "Create your wallet"
+        - "Create wallet"
+      # The backend is reachable and reported its state.
+      calls: ["medusa_core.getWalletState"]
+
+  - name: typing a password enables the create button
+    type:
+      into: { type: "Pre64TextInput", nth: 0 }
+      text: "sitometres-test-passphrase"
+
+  - name: confirming it matches
+    type:
+      into: { type: "Pre64TextInput", nth: 1 }
+      text: "sitometres-test-passphrase"
+
+  - name: creating the wallet reaches the backend and shows the recovery phrase
+    click: "Create wallet"
+    timeout: 90s
+    expect:
+      calls: ["medusa_core.createEncryptedWallet"]
+      calls_succeed: true
+    # The recovery phrase screen can take a while to render.
+
+  # Be specific. "recovery" as a substring also matches the blurb on the create
+  # screen ("you'll see your recovery phrase next"), so a loose assertion here
+  # passes without the app having moved at all.
+  - name: the backup screen is presented
+    wait_for:
+      text: ["Back up your recovery phrase"]
+    timeout: 90s

@@ -1,0 +1,63 @@
+{
+  "name": "@paradoxcomputer/sitometres",
+  "version": "0.1.0",
+  "description": "UI test runner for Logos Basecamp apps: drives real clicks through the QML inspector and proves from the logs that the expected backend calls fired and succeeded.",
+  "author": "Paradox Computer",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paradoxcomputer/sitometres.git"
+  },
+  "bugs": {
+    "url": "https://github.com/paradoxcomputer/sitometres/issues"
+  },
+  "homepage": "https://github.com/paradoxcomputer/sitometres#readme",
+  "type": "module",
+  "bin": {
+    "sitometres": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE-v2",
+    "profiles",
+    "SKILL.md",
+    "CONTRIBUTING.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run clean && tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "clean": "rm -rf dist",
+    "skill:install": "mkdir -p \"$HOME/.claude/skills/sitometres\" && ln -sfn \"$PWD/SKILL.md\" \"$HOME/.claude/skills/sitometres/SKILL.md\" && echo \"installed: ~/.claude/skills/sitometres/SKILL.md -> $PWD/SKILL.md\"",
+    "coverage": "npm run build && node scripts/coverage-gate.mjs tests/*.test.mjs",
+    "dev": "tsc -p tsconfig.json --watch",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:integration": "npm run build && SITOMETRES_INTEGRATION=1 node --test tests/integration.test.mjs"
+  },
+  "keywords": [
+    "logos",
+    "basecamp",
+    "qml",
+    "qt",
+    "ui-testing",
+    "e2e"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

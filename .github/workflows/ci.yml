@@ -1,0 +1,121 @@
+# Nothing ran the tests before this file existed.
+#
+# That is how a syntax error sat in tests/spec.test.mjs with 18 tests silently
+# not executing, and how a test that hung forever went unnoticed: `npm test`
+# stops at the first file that never returns, and a human reading scrollback
+# sees green above it.
+#
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    # A hanging test must fail the job rather than run until the runner's own
+    # limit. The suite is about 25s, most of it four files that drive a fake
+    # Basecamp process; five minutes is generous and still catches a hang.
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # The versions package.json's `engines` claims to support.
+        node: ["20.x", "22.x"]
+        # macOS ships real code — the Basecamp user-dir resolver and the .lgx
+        # variant selector both branch on darwin — and ubuntu-only CI executed
+        # neither. The suite needs no Basecamp, so it runs here as-is.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: typecheck
+        run: npm run lint
+      - name: build
+        run: npm run build
+      - name: test
+        run: npm test
+      # A test that quietly stops running is invisible in a green log. The
+      # integration tests skip by default and are the only ones that may.
+      - name: no unexpected skips
+        run: |
+          node --test tests/*.test.mjs 2>&1 | tee /tmp/test.out
+          skipped=$(grep -E '^# skipped ' /tmp/test.out | awk '{print $3}')
+          if [ "$skipped" != "4" ]; then
+            echo "expected exactly the 4 integration tests to skip, got $skipped"
+            exit 1
+          fi
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Every function in the tool, not every module, and not every line: a
+      # module that is merely imported scores lines for its top level while none
+      # of its behaviour runs, which is how assessFidelity — the sole producer of
+      # the flag deciding whether a log assertion reports a verdict or
+      # INCONCLUSIVE — sat at 46% lines and 0% functions with nothing to say so.
+      - name: every function is executed by something
+        run: npm run coverage
+
+  # The source tests run on both platforms, but for a long time this job — the
+  # only one that installs the tarball and runs the CLI out of it — ran on
+  # ubuntu alone. So nothing ever proved the *packaged* artifact worked on a
+  # Mac, which is the only form anyone actually consumes.
+  packaging:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # The previous check grepped the file list for source maps. It could not
+      # fail for the thing that actually breaks a published copy: a runtime file
+      # left out of `files`. So install the tarball and ask it to do its job.
+      - name: the installed tarball works
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --silent)"
+          work="$(mktemp -d)"
+          cd "$work"
+          npm init -y >/dev/null
+          npm install "$OLDPWD/$tarball" >/dev/null
+          test "$(npx sitometres --version)" = "$(node -p "require('$OLDPWD/package.json').version")"
+          npx sitometres --help | grep -q 'APP OPTIONS'
+          # profiles/ is read at runtime by setup discovery; a `files` list that
+          # drops it breaks every shipped profile with no other symptom.
+          node --input-type=module -e "
+            import { profilesDir } from '@paradoxcomputer/sitometres';
+            import fs from 'node:fs';
+            const d = profilesDir();
+            if (!fs.existsSync(d)) { console.error('profiles/ missing from the tarball: ' + d); process.exit(1); }
+            if (!fs.existsSync(d + '/medusa_ui.yaml')) { console.error('shipped profile missing'); process.exit(1); }
+          "
+      - name: no map without its source
+        run: |
+          npm pack --dry-run --json > /tmp/pack.json
+          if grep -q '\.js\.map' /tmp/pack.json && ! grep -q '"path": "src/' /tmp/pack.json; then
+            echo "tarball ships source maps but not the sources they point at"
+            exit 1
+          fi
