@@ -586,12 +586,20 @@ export function locateBasecamp(explicit?: string): BasecampBinary[] {
  * Does this build have the QML inspector compiled in?
  *
  * The nix wrapper script execs a sibling dot-file that holds the real ELF, so
- * we scan both for the inspector's literal log strings.
+ * we scan the named path and both spellings of that sibling for the
+ * inspector's literal log strings.
+ *
+ * `nix build .#bin-bundle-dir-inspector` — the documented way to get an
+ * inspector-enabled Basecamp — names that sibling `.<base>.elf`, not `.<base>`:
+ * the wrapper itself says `REAL="$SELF_DIR/.$BASE.elf"`. Probing only `.<base>`
+ * found nothing in either target (the wrapper is a shell script, and `.<base>`
+ * does not exist) and reported a bundle that does have the inspector compiled
+ * in as having none. Both names are kept: they cost one statSync each.
  */
 export function hasInspector(binPath: string): boolean {
   const dir = path.dirname(binPath);
   const base = path.basename(binPath);
-  const targets = [binPath, path.join(dir, `.${base}`)];
+  const targets = [binPath, path.join(dir, `.${base}`), path.join(dir, `.${base}.elf`)];
   const needle = Buffer.from("[QmlInspector] Inspector server listening on port", "utf8");
   for (const t of targets) {
     try {

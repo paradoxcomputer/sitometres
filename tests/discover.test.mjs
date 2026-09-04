@@ -163,6 +163,24 @@ test("the nix wrapper layout is scanned through to the dot-file holding the real
   assert.equal(hasInspector(wrapper), true, "the sibling is where the ELF actually is");
 });
 
+test("the nix bundle layout, whose sibling is named .<base>.elf, is scanned too", () => {
+  // The bug this pins: `nix build .#bin-bundle-dir-inspector` — the build the
+  // README and SKILL.md tell you to make — ships `bin/.LogosBasecamp.elf`, and
+  // no `bin/.LogosBasecamp` at all. Probing only the extensionless sibling read
+  // the shell wrapper, found no Qt strings, and told the user their bundle had
+  // "no QML inspector compiled in" when it did.
+  const dir = tmp("sito-bundle-");
+  const wrapper = path.join(dir, "LogosBasecamp");
+  fs.writeFileSync(wrapper, '#!/bin/sh\nBASE="LogosBasecamp"\nREAL="$(dirname "$0")/.$BASE.elf"\nexec "$REAL" "$@"\n' + "# padding\n".repeat(256));
+  fs.chmodSync(wrapper, 0o755);
+
+  assert.equal(hasInspector(wrapper), false, "the wrapper alone holds no inspector string");
+
+  fakeBinary(path.join(dir, ".LogosBasecamp.elf"), { inspector: true });
+  assert.equal(fs.existsSync(path.join(dir, ".LogosBasecamp")), false, "the bundle really does not ship the extensionless name");
+  assert.equal(hasInspector(wrapper), true, "the .elf sibling is where the bundle's ELF actually is");
+});
+
 // --- choosing which Basecamp to run ------------------------------------------
 
 test("an explicit --basecamp is used alone, whatever else the machine has to offer", () => {
