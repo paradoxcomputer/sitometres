@@ -181,6 +181,46 @@ test("the nix bundle layout, whose sibling is named .<base>.elf, is scanned too"
   assert.equal(hasInspector(wrapper), true, "the .elf sibling is where the bundle's ELF actually is");
 });
 
+test("the makeWrapper layout, whose sibling is named .<base>-wrapped, is scanned too", () => {
+  // `.<base>-wrapped` is what nixpkgs' own makeWrapper/wrapProgram emits — the
+  // most common wrapped-binary spelling there is, and present in this very
+  // ecosystem as logos-liblogos/bin/.logos_host-wrapped. Probing only the two
+  // hand-rolled spellings called such a build inspector-less.
+  const dir = tmp("sito-mkwrapper-");
+  const wrapper = path.join(dir, "LogosBasecamp");
+  fs.writeFileSync(wrapper, '#!/bin/sh\nexec "$(dirname "$0")/.LogosBasecamp-wrapped" "$@"\n' + "# padding\n".repeat(256));
+  fs.chmodSync(wrapper, 0o755);
+
+  assert.equal(hasInspector(wrapper), false, "the wrapper alone holds no inspector string");
+
+  fakeBinary(path.join(dir, ".LogosBasecamp-wrapped"), { inspector: true });
+  assert.equal(hasInspector(wrapper), true, "the -wrapped sibling is where makeWrapper puts the ELF");
+});
+
+test("a symlink to the binary is resolved before its siblings are looked for", () => {
+  // `dirname` on a symlink gives the LINK's directory, so the dot-sibling was
+  // looked for next to the link and never found. A `result/` DIRECTORY symlink
+  // survives that (dirname resolves through it), which is why the common nix
+  // layout hid this; a link to the binary itself does not, and locateBasecamp
+  // hands hasInspector the unresolved path.
+  const dir = tmp("sito-symlink-");
+  const store = path.join(dir, "store", "bin");
+  fs.mkdirSync(store, { recursive: true });
+  const real = path.join(store, "LogosBasecamp");
+  fs.writeFileSync(real, '#!/bin/sh\nexec "$(dirname "$0")/.LogosBasecamp.elf" "$@"\n' + "# padding\n".repeat(256));
+  fs.chmodSync(real, 0o755);
+  fakeBinary(path.join(store, ".LogosBasecamp.elf"), { inspector: true });
+
+  const linkDir = path.join(dir, "elsewhere");
+  fs.mkdirSync(linkDir, { recursive: true });
+  const link = path.join(linkDir, "LogosBasecamp");
+  fs.symlinkSync(real, link);
+
+  // The ELF is beside the target, not beside the link; nothing inspector-ish
+  // sits in linkDir at all.
+  assert.equal(hasInspector(link), true, "the sibling lives beside the resolved path");
+});
+
 // --- choosing which Basecamp to run ------------------------------------------
 
 test("an explicit --basecamp is used alone, whatever else the machine has to offer", () => {
