@@ -586,12 +586,46 @@ export function locateBasecamp(explicit?: string): BasecampBinary[] {
  * Does this build have the QML inspector compiled in?
  *
  * The nix wrapper script execs a sibling dot-file that holds the real ELF, so
- * we scan both for the inspector's literal log strings.
+ * we scan the named path and every spelling of that sibling for the
+ * inspector's literal log strings.
+ *
+ * All three spellings are real and all three are on this machine:
+ *   `.<base>`          `.#default`: bin/.LogosBasecamp, a 1.1 MB ELF beside a
+ *                      4 KB sh wrapper.
+ *   `.<base>.elf`      `.#bin-bundle-dir-inspector` — the build README.md:95
+ *                      and SKILL.md:28 tell you to make. Its wrapper says
+ *                      `REAL="$SELF_DIR/.$BASE.elf"` and the bundle ships no
+ *                      extensionless name at all. Missing this spelling is why
+ *                      a bundle with the inspector compiled in was reported as
+ *                      having none.
+ *   `.<base>-wrapped`  what nixpkgs `makeWrapper`/`wrapProgram` emits, e.g.
+ *                      logos-liblogos/bin/.logos_host-wrapped.
+ *
+ * Probing is anchored to the binary we were ASKED about: each target is an
+ * exact name derived from it, never a glob. `bin/.*.elf` would let a sibling
+ * component's inspector (`.ui-host.elf`) answer for a Basecamp that has none.
+ *
+ * binPath is resolved first because the sibling lives beside the real file. A
+ * `result/` directory symlink resolves through dirname anyway, but a symlink
+ * to the binary itself does not, and locateBasecamp passes unresolved paths.
  */
 export function hasInspector(binPath: string): boolean {
-  const dir = path.dirname(binPath);
-  const base = path.basename(binPath);
-  const targets = [binPath, path.join(dir, `.${base}`)];
+  // realpathSync throws on a dangling or missing path; the caller's contract is
+  // that a path we cannot read answers no rather than throwing.
+  let resolved = binPath;
+  try {
+    resolved = fs.realpathSync(binPath);
+  } catch {
+    /* fall back to the path as given */
+  }
+  const dir = path.dirname(resolved);
+  const base = path.basename(resolved);
+  const targets = [
+    resolved,
+    path.join(dir, `.${base}`),
+    path.join(dir, `.${base}.elf`),
+    path.join(dir, `.${base}-wrapped`),
+  ];
   const needle = Buffer.from("[QmlInspector] Inspector server listening on port", "utf8");
   for (const t of targets) {
     try {
