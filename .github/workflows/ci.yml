@@ -16,9 +16,9 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     # A hanging test must fail the job rather than run until the runner's own
-    # limit. The suite is about 25s, most of it four files that drive a fake
-    # Basecamp process; five minutes is generous and still catches a hang.
-    timeout-minutes: 5
+    # limit. The suite takes about three minutes on a hosted runner, most of it
+    # files that drive a fake Basecamp process; ten minutes still catches a hang.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -39,13 +39,16 @@ jobs:
         run: npm run lint
       - name: build
         run: npm run build
+      # Run once and keep the output: the skip check below reads it instead of
+      # running the whole suite a second time.
       - name: test
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/test.out
       # A test that quietly stops running is invisible in a green log. The
       # integration tests skip by default and are the only ones that may.
       - name: no unexpected skips
         run: |
-          node --test tests/*.test.mjs 2>&1 | tee /tmp/test.out
           skipped=$(grep -E '^# skipped ' /tmp/test.out | awk '{print $3}')
           if [ "$skipped" != "4" ]; then
             echo "expected exactly the 4 integration tests to skip, got $skipped"
