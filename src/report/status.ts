@@ -108,7 +108,13 @@ class StatusLine {
     // parse, and no flag suppressed them — `--quiet` covers the banner only and
     // SITOMETRES_NO_STATUS the TTY spinner only. Progress narration is
     // diagnostic output; it belongs beside the errors, not in the payload.
-    const key = `${phase}|${detail.replace(/\(\d+s\)\s*$/, "").trim()}`;
+    //
+    // By default only a PHASE change is narrated: an agent or CI job reading this
+    // pays for every line, and per-step narration ("reading the UI tree" x50) was
+    // most of a run's output while proving nothing the verdict lines do not.
+    // SITOMETRES_PROGRESS=all restores one line per distinct step, for chasing a hang.
+    const everyStep = process.env.SITOMETRES_PROGRESS === "all";
+    const key = everyStep ? `${phase}|${detail.replace(/\(\d+s\)\s*$/, "").trim()}` : phase;
     if (key !== this.lastPrinted) {
       this.lastPrinted = key;
       process.stderr.write(`  [${phase}] ${detail}\n`);

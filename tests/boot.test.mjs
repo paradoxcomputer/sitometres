@@ -15,6 +15,7 @@
 // to misbehave in the specific ways a real one does.
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -79,6 +80,12 @@ test("boot stages the app, launches, and comes back ready", async () => {
     );
     assert.ok(b.sandboxHome, "a throwaway HOME, because --real-home was not asked for");
     assert.notEqual(b.sandboxHome, process.env.HOME);
+
+    // The same directory, under the name `file:` expectations resolve against.
+    // sandboxHome is null both under --real-home and in attach mode; appHome
+    // separates them, and getting it wrong here would silently resolve a spec's
+    // path against a $HOME the app never saw.
+    assert.equal(b.appHome, b.sandboxHome, "and that is what `file:` resolves against");
 
     // The gate the whole launch exists to pass: the port answered AND the shell
     // rendered. A port alone opens ~1.4s in, well before modules have loaded.
@@ -321,6 +328,42 @@ test("a Basecamp that will not go quietly is escalated to SIGKILL, and says so",
   assert.equal(summary.signal, "SIGKILL");
 });
 
+test("a clean stop still returns even when a leaked grandchild keeps the inherited stdio pipe open", async () => {
+  // stop()'s drainPipes gives a cleanly-exited Basecamp up to SHUTDOWN_DRAIN_MS
+  // (500ms) to finish flushing its stdout/stderr before releasing the pipes.
+  // FAKE_LEAK_STDIO_MS spawns a grandchild that inherits those same fds and
+  // outlives the fake Basecamp process itself (which still exits cleanly on
+  // SIGTERM), so the pipes never see 'close' on their own — proving stop()
+  // gives up on the drain instead of hanging on a pipe nothing will ever close
+  // by itself.
+  // Just past the 500ms drain window, not the 10s+ this suite's other fakes
+  // use: long enough to prove stop() does not wait for it, short enough that
+  // the grandchild is gone before the NEXT test measures its own pipe count.
+  const LEAK_MS = 700;
+  const userDir = tmp("sito-leak-stdio-");
+  cleanups.push(() => fs.rmSync(userDir, { recursive: true, force: true }));
+  const session = await launch({
+    binary: FAKE,
+    userDir,
+    env: { FAKE_LEAK_STDIO_MS: String(LEAK_MS) },
+  });
+  await session.waitUntilReady({ timeoutMs: 15_000 });
+
+  const startedAt = Date.now();
+  const summary = await session.stop();
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(summary.forced, false, "the fake process itself still exits cleanly on SIGTERM");
+  // Comfortably inside the 500ms drain window, and well under the leak's own
+  // lifetime: stop() gave up on the drain rather than waiting for a pipe
+  // nothing was going to close.
+  assert.ok(elapsedMs < LEAK_MS, `stop() should not wait for the leaked grandchild, took ${elapsedMs}ms`);
+
+  // Let the grandchild finish exiting on its own before the next test takes
+  // its own "before" reading of this process's active pipe handles — this
+  // session's leaked descriptor is not that test's business.
+  await new Promise((r) => setTimeout(r, LEAK_MS + 300));
+});
+
 test("a stopped session lets the process exit", async () => {
   // Detaching the log pump's listener only PAUSES the stream: the pipe handle
   // stays open and referenced, so the event loop never empties. The CLI never
@@ -343,4 +386,79 @@ test("a stopped session lets the process exit", async () => {
     before,
     "and released again afterwards — otherwise nothing that embeds this can ever exit",
   );
+});
+
+test("boot hashes what it staged, the app and its dependency, before launching (ST2)", async () => {
+  // The header used to name the app under test and nothing else, so an
+  // installed dependency quietly standing in for a fresh build looked exactly
+  // like the build. Each staged app now comes back with its provenance, its
+  // build time (null when the store dated it to the epoch) and the sha256 of
+  // the file Basecamp loads, read from the STAGED copy.
+  const { root } = appRepo("demo_ui", { dependencies: ["demo_core"], version: "1.0.0" });
+  cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+  const core = path.join(root, "modules", "demo_core");
+  fs.mkdirSync(core, { recursive: true });
+  fs.writeFileSync(path.join(core, "demo_core_plugin.so"), "demo_core library bytes");
+  fs.writeFileSync(
+    path.join(core, "manifest.json"),
+    JSON.stringify({ name: "demo_core", version: "0.5.0", type: "core", dependencies: [], main: { "linux-amd64-dev": "demo_core_plugin.so" } }),
+  );
+  // Every file in a nix store reads the epoch.
+  for (const f of ["demo_core_plugin.so", "manifest.json"]) fs.utimesSync(path.join(core, f), 1, 1);
+
+  // Nothing installed, so the answer is about this repo and not this machine.
+  const home = tmp("sito-boot-home-");
+  const install = tmp("sito-boot-install-");
+  cleanups.push(() => fs.rmSync(home, { recursive: true, force: true }));
+  cleanups.push(() => fs.rmSync(install, { recursive: true, force: true }));
+  const prev = { HOME: process.env.HOME, LOGOS_USER_DIR: process.env.LOGOS_USER_DIR };
+  process.env.HOME = home;
+  process.env.LOGOS_USER_DIR = install;
+  let b;
+  try {
+    b = await boot(bootOpts(root));
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  try {
+    assert.deepEqual(b.stagedRecords.map((r) => r.name), ["demo_ui", "demo_core"], "the app under test first");
+    assert.deepEqual(b.plan.staged.map((s) => s.manifest.name), ["demo_ui", "demo_core"]);
+    const [ui, dep] = b.stagedRecords;
+    assert.equal(ui.provenance, "local");
+    assert.equal(ui.version, "1.0.0");
+    assert.equal(typeof ui.builtAt, "number", "a freshly written tree has a real build time");
+    assert.equal(ui.hashes[0].kind, "view");
+    assert.equal(dep.builtAt, null, "an epoch-dated copy is unknown, never 1970");
+    assert.equal(dep.artifact, core);
+    assert.equal(dep.hashes[0].kind, "library");
+    for (const r of b.stagedRecords) {
+      const h = r.hashes[0];
+      assert.match(h.sha256, /^[0-9a-f]{64}$/);
+      const staged = fs.readFileSync(path.join(b.userDir.root, r.slot, r.name, h.path));
+      assert.equal(h.sha256, crypto.createHash("sha256").update(staged).digest("hex"), `${r.name}: the digest of the staged file`);
+    }
+  } finally {
+    await b.dispose();
+  }
+});
+
+test("attach mode staged nothing, and has no plan and no hash to report", async () => {
+  const userDir = tmp("sito-attach-plan-");
+  cleanups.push(() => fs.rmSync(userDir, { recursive: true, force: true }));
+  const owned = await launch({ binary: FAKE, userDir });
+  await owned.waitUntilReady({ timeoutMs: 15_000 });
+  try {
+    const b = await boot({ attachTo: { port: owned.port }, timeoutMs: 15_000 });
+    try {
+      assert.equal(b.plan, null);
+      assert.deepEqual(b.stagedRecords, []);
+    } finally {
+      await b.dispose();
+    }
+  } finally {
+    await owned.stop();
+  }
 });

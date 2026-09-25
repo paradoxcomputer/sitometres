@@ -23,7 +23,8 @@ import YAML from "yaml";
 import type { DiscoveredApp } from "../app/discover.js";
 import type { Session } from "../app/lifecycle.js";
 import { type Spec, validateSpec } from "../spec/schema.js";
-import { Runner } from "./runner.js";
+import { type OpenedScope, Runner } from "./runner.js";
+import { openBudgetFrom, type TimeoutFlags } from "../timeouts.js";
 
 // Same rule as every other reporter: honour a pipe and NO_COLOR. Painting
 // unconditionally put escape codes in output the user had asked to be plain.
@@ -62,7 +63,20 @@ export interface SetupHost {
   session: Session;
   app?: DiscoveredApp | null;
   userDir?: { root: string } | null;
+  /** The $HOME the app was given, so a profile can assert `file:` too. */
+  appHome?: string | null;
   fidelity: { fidelity: "verbose" | "quiet" };
+  /**
+   * The command line's time budgets. A profile inherits them the way a spec
+   * does: its own header and steps still win.
+   */
+  timeouts?: TimeoutFlags;
+  /**
+   * `run --settle`, which a profile inherits the same way. Kept out of
+   * TimeoutFlags on purpose: a crawl's --settle is how long it watches each
+   * click, not a settle for the steps of the profile it runs first.
+   */
+  settleMs?: number;
 }
 
 /** Profiles shipped with sitometres, beside the compiled output. */
@@ -120,6 +134,27 @@ export function findSetupSpec(cwd: string, appName: string, appDir: string | nul
 }
 
 /**
+ * A profile written for one app BY NAME, for an app the spec did not name.
+ *
+ * A cross-app spec stages its dApp's wallet with `with:`, and opening the
+ * wallet has to walk the wallet's gate. Only the named spellings are tried:
+ * `.sitometres/setup.yaml` and `sitometres.setup.yaml` belong to whatever the
+ * directory's own app is, and landing one on the wallet would type the spec
+ * app's gate into it. `--setup` is the spec app's too, for the same reason.
+ */
+export function findNamedSetupSpec(cwd: string, appName: string, appDir: string | null = null): string | null {
+  const candidates: string[] = [];
+  for (const root of setupSearchRoots(cwd, appDir)) {
+    candidates.push(
+      path.join(root, ".sitometres", `${appName}.setup.yaml`),
+      path.join(root, `${appName}.setup.yaml`),
+    );
+  }
+  candidates.push(path.join(profilesDir(), `${appName}.yaml`));
+  return candidates.find((c) => fs.existsSync(c)) ?? null;
+}
+
+/**
  * Parse a profile, or explain why it could not be parsed.
  *
  * Read before the app is opened, because a profile's `ignore_calls:` has to be
@@ -129,7 +164,12 @@ export function findSetupSpec(cwd: string, appName: string, appDir: string | nul
  */
 export function loadSetupSpec(file: string, quietNarration?: boolean): Spec | null {
   try {
-    return validateSpec(YAML.parse(fs.readFileSync(file, "utf8")));
+    // Steps optional here, and only here. An app with no gate to walk through
+    // can still owe the crawl an `ignore_calls:` — smoke reads it off this spec
+    // before the open step is graded — and a profile refused for having no
+    // steps comes back null from this very function, taking the ignore list
+    // with it. A profile is not graded, so no green verdict rides on it.
+    return validateSpec(YAML.parse(fs.readFileSync(file, "utf8")), true);
   } catch (err) {
     // Through say(), like every other line here. Writing straight to stdout
     // meant a profile that did not parse put red prose into the middle of
@@ -172,11 +212,39 @@ export function resolveSetupSpec(
 }
 
 /**
+ * `resolveSetupSpec` for an app in `with:`: the named spellings only, and the
+ * same narration, so "no profile for the wallet" is said rather than implied.
+ */
+export function resolveNamedSetupSpec(
+  opts: SetupOptions,
+  appName: string,
+  appDir: string | null,
+): { file: string; spec: Spec } | null {
+  if (opts.noSetup) return null;
+  const file = findNamedSetupSpec(opts.cwd ?? process.cwd(), appName, appDir);
+  if (!file) {
+    say(opts.quietNarration, `  ${DIM}setup${RST} ${DIM}none found for ${appName}${RST}`);
+    return null;
+  }
+  const spec = loadSetupSpec(file, opts.quietNarration);
+  return spec ? { file, spec } : null;
+}
+
+/**
  * Run a resolved profile against the already-open app.
  *
  * Reuses the ordinary spec runner, so a profile is written in exactly the same
  * language as a test — there is no second dialect to learn, and a profile that
  * stops working fails loudly with the same diagnostics.
+ *
+ * `hostApp` is the app the profile belongs to, when that is not `b.app`: a
+ * `with:` app's profile runs against that app's manifest, so its own `open:`
+ * resolves to the wallet and not to the dApp that staged it.
+ *
+ * `initialScope` is that app's open dock, handed on to the profile's runner so
+ * it starts inside it. The caller passes it only once a second app's dock
+ * exists: with one dock there is nothing else to land in, and leaving the
+ * profile unscoped there keeps a single-app run exactly as it was.
  */
 export async function runSetupProfile(
   b: SetupHost,
@@ -184,35 +252,68 @@ export async function runSetupProfile(
   appName: string,
   whatFollows: string,
   quietNarration?: boolean,
+  hostApp?: DiscoveredApp,
+  initialScope?: { module: string; scope: OpenedScope },
 ): Promise<{ steps: number; failed: string | null }> {
   if (!resolved) return { steps: 0, failed: null };
+  const host = hostApp ?? b.app ?? null;
   say(quietNarration, `  ${DIM}setup${RST} ${DIM}${path.relative(process.cwd(), resolved.file) || resolved.file}${RST}`);
 
+  // A runner only has a QML root once an `open:` step (or an initial scope) gave it one. A
+  // profile that never opens its app therefore evaluated every `state:` against nothing, got
+  // INCONCLUSIVE, and an inconclusive step counted as done: a profile "passed" a create/unlock
+  // gate it never actually drove, and the spec behind it started on the create screen. Open the
+  // app first unless the profile already does, so its state checks really evaluate.
+  // Only a profile that reads app state needs the root; a text-only profile runs exactly as before.
+  const opensItself = resolved.spec.steps.some((s) => s.open !== undefined);
+  const needsRoot = resolved.spec.steps.some(
+    (s) =>
+      s.eval !== undefined ||
+      s.set !== undefined ||
+      (s.expect as { state?: unknown } | undefined)?.state !== undefined ||
+      (s.waitFor as { state?: unknown } | undefined)?.state !== undefined,
+  );
+  const spec: Spec =
+    opensItself || initialScope || !needsRoot
+      ? resolved.spec
+      : { ...resolved.spec, steps: [{ name: `open ${appName}`, open: appName }, ...resolved.spec.steps] };
+
+  const flags = b.timeouts ?? {};
+  const open = openBudgetFrom(flags);
   const runner = new Runner({
     session: b.session,
-    spec: resolved.spec,
+    spec,
     appName,
+    ...(open.timeoutMs !== undefined ? { openTimeoutMs: open.timeoutMs, openTimeoutExplicit: open.explicit } : {}),
+    ...(flags.stepTimeoutMs !== undefined ? { stepTimeoutMs: flags.stepTimeoutMs } : {}),
+    ...(flags.commandTimeoutMs !== undefined ? { commandTimeoutMs: flags.commandTimeoutMs } : {}),
+    ...(flags.callTimeoutMs !== undefined ? { callTimeoutMs: flags.callTimeoutMs } : {}),
+    ...(b.settleMs !== undefined ? { settleMs: b.settleMs } : {}),
     // `app` as well as `manifest`: openApp reads the declared `view` from
     // `app.manifest.view`, so passing only `manifest` left a profile's `open:`
     // on findQmlRoot's fallback — every `state:` in the profile then evaluated
     // against a Basecamp wrapper and FAILED with "evaluated to undefined" after
     // burning the step timeout.
-    ...(b.app ? { manifest: b.app.manifest, app: b.app } : {}),
+    ...(host ? { manifest: host.manifest, app: host } : {}),
+    ...(initialScope ? { initialScope } : {}),
     ...(b.userDir ? { userDirRoot: b.userDir.root } : {}),
+    appHome: b.appHome ?? null,
     logsUsable: b.fidelity.fidelity === "verbose",
     onNote: (line) => say(quietNarration, line),
     onStep: (r) => {
-      const ok = r.verdict !== "fail";
+      // A gate is passed only by a step that PROVED it: an inconclusive step (nothing could be
+      // read) is not a pass for a profile, whatever it would be for an exploratory run.
+      const ok = r.verdict === "pass";
       say(quietNarration, `        ${ok ? GRN + "·" + RST : RED + "x" + RST} ${DIM}${r.name}${RST}`);
       if (ok) return;
-      for (const c of r.checks.filter((k) => k.verdict === "fail")) {
+      for (const c of r.checks.filter((k) => k.verdict !== "pass")) {
         say(quietNarration, `          ${RED}${c.description}${c.detail ? ` — ${c.detail}` : ""}${RST}`);
       }
       if (r.error) say(quietNarration, `          ${RED}${r.error.split("\n")[0]}${RST}`);
     },
   });
   const result = await runner.run();
-  if (result.verdict !== "fail") return { steps: result.steps.length, failed: null };
+  if (result.verdict === "pass") return { steps: result.steps.length, failed: null };
 
   // It used to print red and exit 0. A profile that stopped working leaves the
   // app on the wrong screen, so everything reported after it is about a state

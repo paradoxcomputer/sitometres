@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 
-import { ChildStdoutSource, FileTailSource, listSessionLogs, newestSessionChain } from "../dist/logs/source.js";
+import { ChildStdoutSource, FileTailSource, MergedSource, listSessionLogs, newestSessionChain } from "../dist/logs/source.js";
 import { LogBuffer } from "../dist/logs/buffer.js";
 
 const mkTmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "sito-logsource-"));
@@ -114,6 +114,60 @@ test("a logs dir that does not exist, or holds nothing we recognise, yields no c
   assert.deepEqual(newestSessionChain(path.join(dir, "no", "such", "dir")), []);
   assert.deepEqual(listSessionLogs(dir), []);
   assert.deepEqual(newestSessionChain(dir), []);
+});
+
+test("a config.yaml-renamed log file is matched by its own name, dots escaped and all — and the stable symlink wins over the newest stamp", (t) => {
+  // config.yaml can rename the file (logging.file), so the session pattern is
+  // built from whatever name was configured, not hardcoded to "basecamp.log".
+  // The name here has a dot in it on purpose: logNameFor regex-escapes the
+  // stem and extension it is given, and a name like "app.session.log" is the
+  // proof — an unescaped "." in the pattern is "any character", which would
+  // also match the decoy file below.
+  const dir = mkTmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const FILE = "app.session.log";
+
+  const newerStamp = path.join(dir, "app.session_20260818_093012.log");
+  const olderStamp = path.join(dir, "app.session_20260817_221049.log");
+  fs.writeFileSync(newerStamp, STARTED + "\n");
+  fs.writeFileSync(olderStamp, STARTED + "\n");
+  // Would match "app.session_..." too if the stem's "." were an unescaped
+  // wildcard instead of a literal dot.
+  fs.writeFileSync(path.join(dir, "appXsession_20260819_000000.log"), STARTED + "\n");
+
+  assert.deepEqual(
+    listSessionLogs(dir, FILE).map((f) => f.file),
+    [newerStamp, olderStamp],
+    "only the two real sessions of THIS name, newest stamp first — the decoy is neither",
+  );
+
+  // 0.3.0's stable symlink names the live session; here it points at the
+  // OLDER stamp, which is the only way to tell whether newestSessionChain
+  // followed the link or merely picked the newest name on disk.
+  fs.symlinkSync(path.basename(olderStamp), path.join(dir, FILE));
+  assert.deepEqual(
+    newestSessionChain(dir, FILE).map((f) => f.file),
+    [olderStamp],
+    "the symlink decided it, not the newest stamp",
+  );
+});
+
+test("MergedSource is file-tail if either half is, merges lagging, describe and stop", () => {
+  const stopped = [];
+  const stdout = { kind: "child-stdout", lagging: false, describe: () => "child stdout", stop: () => stopped.push("stdout") };
+  const file = { kind: "file-tail", lagging: true, describe: () => "the log file", stop: () => stopped.push("file") };
+
+  const merged = new MergedSource([stdout, file]);
+  assert.equal(merged.kind, "file-tail", "either half being a file tail makes the pair one too");
+  assert.equal(merged.lagging, true, "lagging if EITHER source can arrive late");
+  assert.equal(merged.describe(), "child stdout + the log file");
+  merged.stop();
+  assert.deepEqual(stopped, ["stdout", "file"], "stopping the merge stops both sources");
+
+  const stdout2 = { kind: "child-stdout", lagging: false, describe: () => "b", stop: () => {} };
+  const bothLive = new MergedSource([stdout, stdout2]);
+  assert.equal(bothLive.kind, "child-stdout");
+  assert.equal(bothLive.lagging, false, "neither source lags");
 });
 
 // --- tailing the newest session ---------------------------------------------

@@ -3,7 +3,7 @@
 // Every test here failed before its fix. The first one is the important one:
 // `--user-dir` recursively deleted the install it was pointed at, while the
 // run header said it was staging into a throwaway directory.
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,7 +13,24 @@ import { stageUserDir } from "../dist/app/userdir.js";
 import { killOwned } from "../dist/app/lifecycle.js";
 import { isExecutableFile } from "../dist/app/discover.js";
 
-const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+// Registered and swept, the way every neighbour does it (see
+// tests/discover.test.mjs and tests/smallhelpers.test.mjs). This helper used to
+// register nothing, and `app()` below writes a manifest.json into each
+// directory it makes - so every run of the suite deposited another real
+// manifest under /tmp permanently. Nearly a thousand had accumulated. That is
+// not only untidy: a stray manifest.json in the sweep path is exactly the
+// hazard that put `"version": 2` in front of the discovery code and took this
+// suite down, so the file that tests isolation was quietly leaking the thing
+// isolation is about.
+const made = [];
+const tmp = (p) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), p));
+  made.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of made) fs.rmSync(dir, { recursive: true, force: true });
+});
 
 /** A user-dir that already looks like somebody's real Basecamp install. */
 function populated() {

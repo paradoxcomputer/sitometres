@@ -9,18 +9,40 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type BasecampBinary, compareVersions, type DiscoveredApp, discoverApps, locateBasecamp, staleRememberedBasecamp } from "./app/discover.js";
-import { attach, launch, reapDirOnExit, releaseDir, type ReadySummary, type Session } from "./app/lifecycle.js";
+import {
+  type BasecampBinary,
+  basecampUserDirs,
+  compareCopies,
+  type DiscoveredApp,
+  discoverApps,
+  discoverCopies,
+  locateBasecamp,
+  type PassReason,
+  satisfiesRange,
+  staleRememberedBasecamp,
+} from "./app/discover.js";
+import { displayArtifact, recordStaged, type StagedRecord } from "./app/fingerprint.js";
+import { attach, launch, reapDirOnExit, releaseDir, type ReadySummary, type Session, type SessionMode } from "./app/lifecycle.js";
 import { uiLabel } from "./app/manifest.js";
-import { stageUserDir, type StagedUserDir } from "./app/userdir.js";
+import { hostVariant, stageUserDir, type StagedUserDir } from "./app/userdir.js";
 import { assessFidelity, type FidelityReport } from "./runner/fidelity.js";
 import { status } from "./report/status.js";
 import { detectWalletProvider, type WalletProvider } from "./app/wallet.js";
 import { configPath, saveConfig } from "./config.js";
 import { ask, canPrompt } from "./report/prompt.js";
 import type { DebugContext } from "./runner/debug.js";
+import type { LogCursor, LogLine } from "./logs/buffer.js";
+import { CallWindowTracker } from "./logs/classify.js";
+import {
+  commandTimeoutFor,
+  DEFAULT_ATTACH_TIMEOUT_MS,
+  DEFAULT_CALL_WINDOW_MS,
+  DEFAULT_STARTUP_TIMEOUT_MS,
+  type TimeoutFlags,
+  timeoutFlagsOf,
+} from "./timeouts.js";
 
-export interface BootOptions {
+export interface BootOptions extends TimeoutFlags {
   /** Where to look for the app. Defaults to cwd. */
   cwd?: string;
   /** Module name to test when the directory holds more than one app. */
@@ -42,6 +64,10 @@ export interface BootOptions {
   /** Attach to an already-running Basecamp instead of launching one. */
   attachTo?: { port?: number; logsDir?: string };
   variant?: string;
+  /**
+   * Startup readiness budget (--timeout). Also the budget for opening the app
+   * when neither --open-timeout nor the spec names one. Infinity means none.
+   */
   timeoutMs?: number;
   /**
    * Extra environment for the app under test. Merged over the sandbox.
@@ -82,8 +108,24 @@ export interface Boot {
   app: DiscoveredApp | null;
   /** Every app staged, including dependencies. */
   staged: DiscoveredApp[];
+  /**
+   * How each staged copy was chosen, and every copy passed over. Null in
+   * attach mode, which staged nothing. `doctor` computes the same plan without
+   * launching anything; see planStaging.
+   */
+  plan: StagingPlan | null;
+  /**
+   * One record per staged app, the app under test first, each with a sha256
+   * of the file Basecamp loads from the STAGED copy. Empty in attach mode.
+   */
+  stagedRecords: StagedRecord[];
   /** The throwaway $HOME given to the app, or null when the real one is in use. */
   sandboxHome: string | null;
+  /**
+   * The $HOME the app was ACTUALLY given, sandboxed or not — what `file:`
+   * expectations resolve against. Null only in attach mode. See appHomeFor.
+   */
+  appHome: string | null;
   /** One line describing the wallet identity, for the report header. */
   walletSummary: string | null;
   /**
@@ -97,6 +139,11 @@ export interface Boot {
   userDir: StagedUserDir | null;
   /** Debug context for interactive debugging */
   debug?: DebugContext;
+  /**
+   * The time budgets this boot was given, so a setup profile run against it
+   * inherits them. Absent from a boot built by hand, which then gets defaults.
+   */
+  timeouts?: TimeoutFlags;
   dispose(): Promise<void>;
 }
 
@@ -190,8 +237,8 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
 
   // --- attach mode: the developer already has Basecamp running -------------
   if (opts.attachTo) {
-    const session = attach(opts.attachTo);
-    const ready = await session.waitUntilReady({ timeoutMs: opts.timeoutMs ?? 30_000 });
+    const session = attach({ ...opts.attachTo, commandTimeoutMs: outsideCommandTimeout(opts) });
+    const ready = await session.waitUntilReady({ timeoutMs: opts.timeoutMs ?? DEFAULT_ATTACH_TIMEOUT_MS });
     
     // Initialize debug context if debug mode is enabled (even in attach mode)
     const debugContext: DebugContext | undefined = opts.debug ? {
@@ -210,27 +257,35 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
     return {
       session,
       ready,
-      // Attached sessions read buffered log FILES, which Basecamp flushes only
-      // on rotation or exit, so we never claim the log is authoritative here.
+      // Attached sessions read log FILES. 0.2.2 flushes them only on rotation
+      // or exit; 0.3.0 flushes every line, but nothing here can tell whether
+      // that instance was started with its Qt logging routed to the file at
+      // all. So we never claim the log is authoritative here.
       fidelity: {
         fidelity: "quiet",
         qtLogLines: 0,
         moduleLogLines: 0,
         summary: "Attached to a running Basecamp; its live stdout is not available to us.",
         remedy:
-          "Log-based assertions read the on-disk log, which Basecamp buffers and flushes only on rotation " +
-          "or exit, so they are reported INCONCLUSIVE. Let sitometres launch the app to get live evidence.",
+          "Log-based assertions read the on-disk log instead, and whether that Basecamp was started with " +
+          "its Qt logging reaching the file cannot be checked from here (0.2.2 also flushes the file only " +
+          "on rotation or exit), so they are reported INCONCLUSIVE. Let sitometres launch the app to get " +
+          "live evidence.",
       },
       app: null,
       staged: [],
+      plan: null,
+      stagedRecords: [],
       basecamp: null,
       userDir: null,
       sandboxHome: null,
+      appHome: appHomeFor(null, session.mode),
       walletSummary: null,
       // Attach mode drives someone else's process; sitometres neither chose
       // its wallet nor can unlock one on its behalf.
       walletUnlock: null,
       debug: debugContext,
+      timeouts: timeoutFlagsOf(opts),
       async dispose() {
         await session.stop();
       },
@@ -241,46 +296,14 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
   // Look in the working directory first, then in the developer's Basecamp
   // install, so `sitometres <app>` works from anywhere without a --app-dir.
   status.set("Preparing", `looking for an app in ${short(cwd)}`);
-  let candidates = discoverApps(cwd);
-  if (opts.app && !candidates.some((c) => c.manifest.name === opts.app)) {
-    // Widen to the Basecamp install, keeping the local copy of any name that
-    // exists in both — a developer testing from their repo means their build.
-    status.set("Preparing", `"${opts.app}" is not here — checking your Basecamp install`);
-    const byName = new Map(candidates.map((c) => [c.manifest.name, c]));
-    for (const inst of installedApps()) {
-      const prev = byName.get(inst.manifest.name);
-      if (!prev || (prev.incomplete && !inst.incomplete)) byName.set(inst.manifest.name, inst);
-    }
-    candidates = [...byName.values()];
-  }
-  const app = selectApp(candidates, opts.app);
-
-  if (app.incomplete) {
-    throw new BootError(`"${app.manifest.name}" is not built`, `${app.incomplete}. Build it first, then run sitometres again.`);
-  }
-
-  const wanted = new Set<string>([app.manifest.name, ...app.manifest.dependencies, ...(opts.with ?? [])]);
-  const staged = collectWithDependencies(candidates, wanted, cwd, app.manifest.name);
-
-  status.set("Preparing", `resolving ${app.manifest.name} and ${app.manifest.dependencies.length} dependency(ies)`);
-  const stubs = staged.filter((s) => s.incomplete);
-  if (stubs.length > 0) {
-    const s0 = stubs[0]!;
-    throw new BootError(
-      `"${app.manifest.name}" needs "${s0.manifest.name}", and the only copy found is not built`,
-      `${s0.incomplete}. Build that module, or point sitometres at a built copy — ` +
-        `if it is already installed in Basecamp, sitometres will find it there automatically.`,
-    );
-  }
-
-  const unresolved = [...wanted].filter((n) => !staged.some((s) => s.manifest.name === n));
-  if (unresolved.length > 0) {
-    throw new BootError(
-      `"${app.manifest.name}" depends on ${unresolved.map((u) => `"${u}"`).join(", ")}, which could not be found`,
-      `Looked in this repo, its parent, and your Basecamp install. Build the dependency, ` +
-        `install it into Basecamp, or pass --with <name> once it exists on disk.`,
-    );
-  }
+  const plan = planStaging({
+    cwd,
+    ...(opts.app !== undefined ? { app: opts.app } : {}),
+    ...(opts.with !== undefined ? { with: opts.with } : {}),
+    ...(opts.variant !== undefined ? { variant: opts.variant } : {}),
+    onProgress: (detail) => status.set("Preparing", detail),
+  });
+  const { app, staged } = plan;
 
   let binaries = locateBasecamp(opts.basecamp);
   let basecamp = binaries.find((b) => b.inspectorEnabled);
@@ -338,25 +361,49 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
   );
   const userDir = stageUserDir(staged, stageOpts);
 
+  // Hashed now, after staging and before launch: the bytes Basecamp is about to
+  // load, read from where it will load them. Hashing the source instead would
+  // hide the one failure worth catching, a copy that is not what was chosen.
+  status.set("Preparing", "hashing what was staged");
+  const variant = opts.variant ?? hostVariant();
+  const notesByName = notesFor(plan);
+  const stagedRecords = staged.map((s) => {
+    const record = recordStaged(s, userDir.root, variant);
+    const note = notesByName.get(s.manifest.name);
+    return note ? { ...record, note } : record;
+  });
+
   // --real-home is the ONE lever that decides this. A wallet password used to
   // be folded in here, which meant passing one silently handed the app the
   // developer's real $HOME — the opposite of what its help text promised.
   const useRealHome = opts.realHome === true;
   if (!useRealHome) status.set("Preparing", "creating a throwaway HOME so app data stays private to this run");
   const sandbox = useRealHome ? null : makeSandboxHome();
+  // Hoisted because appHome is derived from it, not from the sandbox root.
+  // `--env HOME=…` lands in opts.env and wins here, so a sandbox root read on
+  // its own names a directory the app was never given.
+  const appEnv = { ...(sandbox?.env ?? {}), ...(opts.env ?? {}) };
   const launchOpts: Parameters<typeof launch>[0] = {
     binary: basecamp.path,
     userDir: userDir.root,
     headless: opts.headless !== false,
-    env: { ...(sandbox?.env ?? {}), ...(opts.env ?? {}) },
+    env: appEnv,
+    commandTimeoutMs: outsideCommandTimeout(opts),
   };
   if (opts.port !== undefined) launchOpts.port = opts.port;
+  // A caller's user-dir whose config.yaml switched the stdout mirror off still
+  // writes its log file, flushed per line: read that instead of reporting a
+  // silent Basecamp and blaming QT_FORCE_STDERR_LOGGING for it.
+  const logging = userDir.loggingConfig;
+  if (logging && logging.enabled && !logging.console && !logging.problem) {
+    launchOpts.tailLogs = { dir: logging.dir, file: logging.file };
+  }
   status.set("Preparing", `launching Basecamp${opts.headless === false ? "" : " (offscreen)"}`);
   const session = await launch(launchOpts);
 
   let ready: ReadySummary;
   try {
-    ready = await session.waitUntilReady({ timeoutMs: opts.timeoutMs ?? 120_000 });
+    ready = await session.waitUntilReady({ timeoutMs: opts.timeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS });
   } catch (err) {
     await session.stop();
     userDir.cleanup();
@@ -365,7 +412,12 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
   }
 
   status.set("Preparing", "checking what this build's logs will show");
-  const fidelity = assessFidelity(session.logs);
+  const fidelity = assessFidelity(
+    session.logs,
+    logging && !logging.problem
+      ? { logging: { enabled: logging.enabled, console: logging.console, configPath: logging.path } }
+      : {},
+  );
 
   // Initialize debug context if debug mode is enabled
   const debugContext: DebugContext | undefined = opts.debug ? {
@@ -387,18 +439,80 @@ export async function boot(opts: BootOptions = {}): Promise<Boot> {
     fidelity,
     app,
     staged,
+    plan,
+    stagedRecords,
     basecamp,
     userDir,
     sandboxHome: sandbox?.root ?? null,
+    appHome: appHomeFor(sandbox?.root ?? null, session.mode, appEnv),
     walletSummary: describeWallet(app, staged, useRealHome),
     walletUnlock: unlockPlan(app, staged, opts.wallet?.password),
     debug: debugContext,
+    timeouts: timeoutFlagsOf(opts),
     async dispose() {
       await session.stop();
       userDir.cleanup();
       sandbox?.cleanup();
     },
   };
+}
+
+/**
+ * The deadline for an inspector command issued outside any spec step: the
+ * readiness probe, an open, a crawl's clicks and snapshots.
+ *
+ * --command-timeout, else the bridge window (--call-timeout, else the stock
+ * 20 s) plus a margin. A spec step resolves its own; see Runner.budgetFor.
+ */
+export function outsideCommandTimeout(opts: TimeoutFlags): number {
+  return opts.commandTimeoutMs ?? commandTimeoutFor(opts.callTimeoutMs ?? DEFAULT_CALL_WINDOW_MS);
+}
+
+/**
+ * Keeps the deadline of commands issued outside any spec step on the bridge
+ * window the log has shown so far.
+ *
+ * Boot sets that deadline from the flags alone, before the app has logged a
+ * single dispatch. A Basecamp built with a longer window prints it on every
+ * synchronous dispatch line, and what runs after those lines (an open, a
+ * wallet unlock, which is itself a synchronous backend call, a crawl's
+ * clicks) has to be allowed that window, or a call the bridge would still
+ * answer is reported as a hung app. --command-timeout, when given, is the
+ * deadline outright and is left alone.
+ */
+export class OutsideDeadline {
+  private readonly windows = new CallWindowTracker();
+
+  constructor(
+    private readonly session: { inspector: { commandTimeoutMs: number }; logs: { slice(from: LogCursor): LogLine[] } },
+    private readonly flags: TimeoutFlags,
+  ) {}
+
+  /** --call-timeout, else the largest window the log has shown, else the stock 20 s. */
+  callWindow(): number {
+    if (this.flags.callTimeoutMs !== undefined) return this.flags.callTimeoutMs;
+    const logs = this.session.logs;
+    const learned = typeof logs?.slice === "function" ? this.windows.observe(logs) : null;
+    return learned ?? DEFAULT_CALL_WINDOW_MS;
+  }
+
+  /**
+   * Read whatever the log added, and move the inspector's deadline with it.
+   *
+   * A window learned from the log only ever raises the deadline above boot's.
+   * Not every dispatch carries the bridge's window: Basecamp gives a call to a
+   * module that is still starting a short budget of its own (1.5 s) on the
+   * same line, and a deadline cut to that would report an ordinary slow reply
+   * as a hung app. A declared --call-timeout is taken as it is.
+   */
+  follow(): number {
+    if (this.flags.commandTimeoutMs !== undefined) return this.flags.commandTimeoutMs;
+    const window = this.callWindow();
+    const floor = this.flags.callTimeoutMs !== undefined ? window : Math.max(window, DEFAULT_CALL_WINDOW_MS);
+    const ms = outsideCommandTimeout({ callTimeoutMs: floor });
+    this.session.inspector.commandTimeoutMs = ms;
+    return ms;
+  }
 }
 
 /**
@@ -466,24 +580,34 @@ export function makeSandboxHome(): { root: string; env: Record<string, string>; 
 }
 
 /**
- * Resolve the app plus everything it declares a dependency on.
+ * The $HOME the app under test was given — what `file:` resolves against.
  *
- * A dependency built in a sibling directory is common (a UI plugin in one repo,
- * its core module in another), so we widen the search to the parent directory
- * before giving up — but only for names actually declared.
+ * Not the same question as `sandboxHome`, which is null in two situations that
+ * must not be confused. Under --real-home the app really does see the
+ * developer's own $HOME (launch() merges the sandbox env over process.env, so
+ * with no sandbox the child inherits ours), and a spec written against $HOME
+ * keeps working. In attach mode sitometres chose nothing, so the honest answer
+ * is null and `file:` reports INCONCLUSIVE rather than resolving a path against
+ * a directory the app never saw.
+ *
+ * Extracted rather than inlined into boot() for the reason CONTRIBUTING gives:
+ * the --real-home arm is otherwise reachable only by launching an app against
+ * the developer's real home, which is the one thing the suite must not do.
  */
-/** Apps already installed into a Basecamp on this machine. */
-/**
- * Every place a Basecamp install could be, on this platform.
- *
- * One implementation, because there were three and they disagreed: only this
- * one knew the macOS locations, so dependency staging and `doctor` were
- * Linux-only. A macOS author got a hard error reading "Looked in this repo,
- * its parent, and your Basecamp install" — which was false, it had not — and a
- * doctor that said an installed dependency was not there.
- *
- * $LOGOS_USER_DIR wins when set; it is Basecamp's own override.
- */
+export function appHomeFor(
+  sandboxRoot: string | null,
+  mode: SessionMode,
+  env: Record<string, string> = {},
+): string | null {
+  if (mode === "attached") return null;
+  // `env` first, and this order is the whole point: boot merges opts.env OVER
+  // the sandbox's own, and launch applies that over process.env, so `--env
+  // HOME=…` really is the $HOME the child got. Reading the sandbox root alone
+  // made `file:` stat a directory the app never wrote to and call the app
+  // wrong for it — a red verdict about the runner's own bookkeeping.
+  return env.HOME ?? sandboxRoot ?? process.env.HOME ?? os.homedir();
+}
+
 /**
  * Why a path the user named cannot be used.
  *
@@ -501,34 +625,11 @@ function describeUnusable(p: string): string {
   }
 }
 
-/**
- * Where Basecamp keeps its user-dir on this platform.
- *
- * The platform and home are parameters so both branches can be asserted from
- * either host. Reading `process.platform` directly, the darwin branch was
- * executed by nothing at all: CI runs ubuntu only, and the one test covering
- * it asserted the Linux list when it was not on a Mac — so it would have passed
- * with the darwin code deleted, while an archived task recorded the coverage
- * as done.
- */
-export function basecampUserDirs(
-  platform: string = process.platform,
-  home: string = process.env.HOME ?? os.homedir(),
-): string[] {
-  const perPlatform =
-    platform === "darwin"
-      ? ["Library/Application Support/Logos/LogosBasecampDev", "Library/Application Support/Logos/LogosBasecamp"]
-      : [".local/share/Logos/LogosBasecampDev", ".local/share/Logos/LogosBasecamp"];
-  return [
-    process.env.LOGOS_USER_DIR,
-    ...perPlatform.map((rel) => path.join(home, rel)),
-    // Kept for a developer who moved between platforms, or a shared checkout.
-    ...(platform === "darwin"
-      ? [".local/share/Logos/LogosBasecampDev", ".local/share/Logos/LogosBasecamp"].map((r) => path.join(home, r))
-      : []),
-  ].filter((d): d is string => Boolean(d));
-}
+// Moved to discovery, which needs it to tell an installed copy from a local
+// one. Re-exported so `doctor` and every existing import keep working.
+export { basecampUserDirs };
 
+/** Apps already installed into a Basecamp on this machine. */
 export function installedApps(): DiscoveredApp[] {
   const out: DiscoveredApp[] = [];
   for (const d of basecampUserDirs()) {
@@ -538,59 +639,265 @@ export function installedApps(): DiscoveredApp[] {
   return out;
 }
 
-function collectWithDependencies(
-  candidates: DiscoveredApp[],
-  wanted: Set<string>,
-  cwd: string,
+export interface StagingOptions {
+  /** Where to look for the app. Defaults to cwd. */
+  cwd?: string;
+  /** Module name to test when the directory holds more than one app. */
+  app?: string;
+  /** Extra app names to stage alongside it. */
+  with?: string[];
+  /** Platform variant a `.lgx` will be unpacked for. Accepted for symmetry with boot. */
+  variant?: string;
+  /** Where to say what is happening; boot points this at the status line. */
+  onProgress?: (detail: string) => void;
+}
+
+/** One name's choice: the copy that will be staged, and every copy that lost to it. */
+export interface StagingDecision {
+  name: string;
+  chosen: DiscoveredApp;
+  passedOver: Array<{ copy: DiscoveredApp; reason: PassReason }>;
+}
+
+export interface StagingPlan {
+  /** The app under test. */
+  app: DiscoveredApp;
+  /** Everything to stage, the app under test first. */
+  staged: DiscoveredApp[];
+  /** One decision per staged name, in the same order. */
+  decisions: StagingDecision[];
+}
+
+/**
+ * Decide which copy of the app, and of each dependency, a run stages.
+ *
+ * Discovery, selection and dependency resolution, and nothing else: no
+ * Basecamp binary, no staging, no launch. `boot` stages what this returns and
+ * `doctor` prints it, so `doctor` cannot predict an artifact the run would not
+ * stage. Every choice between two copies goes through compareCopies, the one
+ * comparison, and every copy that lost is kept with the reason it lost.
+ *
+ * Where it looks, in order, which is also the order ties are broken in:
+ *
+ *   1. the working directory
+ *   2. the Basecamp install, when the app under test is not in (1)
+ *   3. for the app's dependencies and `with:` names only, the Basecamp install
+ *      and the parent directory, because a UI plugin in one repo and its core
+ *      module in a sibling is the common layout
+ *
+ * The sweep in (3) never replaces the app under test. `selectApp` has already
+ * chosen it from what was found where the user pointed, and a developer
+ * testing from their repo means their build. The parent directory reaches
+ * every SIBLING project, and a sibling holding a plugin of the same name (a
+ * fork, a second checkout, a copy) used to be staged in its place.
+ *
+ * Throws BootError for the same cases boot always has: no app, a core module
+ * named as the app, an app or dependency that is not built, a dependency that
+ * cannot be found.
+ */
+export function planStaging(opts: StagingOptions = {}): StagingPlan {
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const decisions = new Map<string, StagingDecision>();
   /**
-   * The app under test, which the sweep below must never replace.
-   *
-   * `selectApp` has already chosen it out of what was found where the user
-   * pointed, and "a developer testing from their repo means their build" — the
-   * rule the widening path above states explicitly. The dependency sweep did not
-   * honour it: it searches `path.dirname(cwd)`, and `discoverApps` scans one
-   * level of children below its root, so it reaches every SIBLING project. A
-   * sibling holding a plugin of the same name — a fork, a second checkout, a
-   * copy — would win on `builtAt` alone and be staged in place of the build the
-   * user asked for, reported only as a different `built` line in the header.
+   * Version ranges the app under test declares for its dependencies (0.3.0's
+   * object form). Known only once the app is chosen; a copy inside its range
+   * beats one outside it, because 0.3.0 refuses to open an app whose
+   * dependency is out of range.
    */
-  appUnderTest: string,
-): DiscoveredApp[] {
-  const byName = new Map<string, DiscoveredApp>();
-  for (const c of candidates) {
-    const prev = byName.get(c.manifest.name);
-    // A built copy beats a stub; between two builds, the newer one wins.
-    if (!prev || (prev.incomplete && !c.incomplete) || (!c.incomplete && c.builtAt > prev.builtAt)) {
-      byName.set(c.manifest.name, c);
+  const ranges = new Map<string, string>();
+  const compareFor = (candidate: DiscoveredApp, incumbent: DiscoveredApp): { wins: boolean; reason: PassReason | null } => {
+    const range = ranges.get(candidate.manifest.name);
+    if (range !== undefined) {
+      const a = satisfiesRange(candidate.manifest.version, range) === true;
+      const b = satisfiesRange(incumbent.manifest.version, range) === true;
+      if (a !== b) return { wins: a, reason: "out-of-range" };
+    }
+    return compareCopies(candidate, incumbent);
+  };
+
+  /** Weigh one more copy of a name against the one currently chosen. */
+  const consider = (copy: DiscoveredApp): void => {
+    const name = copy.manifest.name;
+    const d = decisions.get(name);
+    if (!d) {
+      decisions.set(name, { name, chosen: copy, passedOver: [] });
+      return;
+    }
+    // The same directory is often reached twice: $LOGOS_USER_DIR set to the
+    // default install, or the parent sweep walking back into the working
+    // directory. One copy found twice is not a choice.
+    if ([d.chosen, ...d.passedOver.map((p) => p.copy)].some((c) => sameArtifact(c, copy))) return;
+    const { wins, reason } = compareFor(copy, d.chosen);
+    if (wins) {
+      d.passedOver.push({ copy: d.chosen, reason: reason ?? "older" });
+      d.chosen = copy;
+    } else {
+      d.passedOver.push({ copy, reason: reason ?? "older" });
+    }
+  };
+  const chosenNow = (): DiscoveredApp[] =>
+    [...decisions.values()]
+      .map((d) => d.chosen)
+      .sort((a, b) => Number(b.slot === "plugins") - Number(a.slot === "plugins"));
+
+  for (const copy of discoverCopies(cwd)) consider(copy);
+  let candidates = chosenNow();
+  if (opts.app && !candidates.some((c) => c.manifest.name === opts.app)) {
+    // Widen to the Basecamp install. A name found in both is decided by the
+    // same comparison as everywhere else, so a local build of a dependency
+    // still beats an installed copy of the same version.
+    opts.onProgress?.(`"${opts.app}" is not here, so checking your Basecamp install`);
+    for (const d of basecampUserDirs()) {
+      if (!fs.existsSync(d)) continue;
+      for (const copy of discoverCopies(d)) consider(copy);
+    }
+    candidates = chosenNow();
+  }
+  const app = selectApp(candidates, opts.app);
+
+  if (app.incomplete) {
+    throw new BootError(`"${app.manifest.name}" is not built`, `${app.incomplete}. Build it first, then run sitometres again.`);
+  }
+
+  // Ranges first, then every copy already weighed without them is weighed again.
+  for (const spec of app.manifest.dependencySpecs ?? []) if (spec.version) ranges.set(spec.name, spec.version);
+  for (const name of ranges.keys()) {
+    const d = decisions.get(name);
+    if (!d) continue;
+    decisions.delete(name);
+    for (const c of [d.chosen, ...d.passedOver.map((p) => p.copy)]) consider(c);
+  }
+
+  // Optional dependencies (0.3.0) are staged when they can be found, and are
+  // never a reason to refuse the run: Basecamp opens the app without them.
+  const optional = new Set((app.manifest.optional_dependencies ?? []).filter((n) => n !== app.manifest.name));
+  const wanted = new Set<string>([app.manifest.name, ...app.manifest.dependencies, ...(opts.with ?? [])]);
+  for (const n of wanted) optional.delete(n);
+  opts.onProgress?.(`resolving ${app.manifest.name} and ${app.manifest.dependencies.length} dependency(ies)`);
+  // Always consider the Basecamp install for a dependency, not only when the
+  // local copy is missing: a complete-but-OLD artifact in dist/ would otherwise
+  // beat a newer installed module purely by being found first.
+  for (const dir of [...basecampUserDirs(), path.dirname(cwd)]) {
+    for (const copy of discoverCopies(dir)) {
+      if (!(wanted.has(copy.manifest.name) || optional.has(copy.manifest.name)) || copy.incomplete) continue;
+      // Dependencies are worth hunting for; the app under test is not.
+      if (copy.manifest.name === app.manifest.name) continue;
+      consider(copy);
     }
   }
 
-  // Always consider the Basecamp install as a candidate, not only when the
-  // local copy is missing. A complete-but-OLD artifact in dist/ would otherwise
-  // beat a newer installed module purely by being found first.
-  {
-    // A developer's Basecamp install is the most likely place a dependency is
-    // already sitting; look there before the filesystem at large.
-    const installed = [...basecampUserDirs(), path.dirname(cwd)];
-    for (const dir of installed) {
-      for (const found of discoverApps(dir)) {
-        if (!wanted.has(found.manifest.name) || found.incomplete) continue;
-        // Dependencies are worth hunting for; the app under test is not.
-        if (found.manifest.name === appUnderTest) continue;
-        const prev = byName.get(found.manifest.name);
-        if (!prev || prev.incomplete) {
-          byName.set(found.manifest.name, found);
-          continue;
-        }
-        const byVersion = compareVersions(found.manifest.version, prev.manifest.version);
-        if (byVersion > 0 || (byVersion === 0 && found.builtAt > prev.builtAt)) {
-          byName.set(found.manifest.name, found);
-        }
+  const staged = [...wanted, ...optional]
+    .map((n) => (n === app.manifest.name ? app : decisions.get(n)?.chosen))
+    .filter((c): c is DiscoveredApp => c !== undefined)
+    // An optional dependency found only as an unbuilt copy is left out, not an error.
+    .filter((c) => !(optional.has(c.manifest.name) && c.incomplete));
+
+  const stubs = staged.filter((s) => s.incomplete);
+  if (stubs.length > 0) {
+    const s0 = stubs[0]!;
+    throw new BootError(
+      `"${app.manifest.name}" needs "${s0.manifest.name}", and the only copy found is not built`,
+      `${s0.incomplete}. Build that module, or point sitometres at a built copy. ` +
+        `If it is already installed in Basecamp, sitometres will find it there automatically.`,
+    );
+  }
+
+  const unresolved = [...wanted].filter((n) => !staged.some((s) => s.manifest.name === n));
+  if (unresolved.length > 0) {
+    throw new BootError(
+      `"${app.manifest.name}" depends on ${unresolved.map((u) => `"${u}"`).join(", ")}, which could not be found`,
+      `Looked in this repo, its parent, and your Basecamp install. Build the dependency, ` +
+        `install it into Basecamp, or pass --with <name> once it exists on disk.`,
+    );
+  }
+
+  // Each reason was recorded against whichever copy was chosen AT THE TIME,
+  // and a later copy can displace that one. An .lgx that tied untimed with a
+  // local directory, both then beaten by a higher installed version, kept its
+  // "untimed-tie" and printed "the copy found first was kept" under a line
+  // that staged neither. What a reader is told is why each copy lost to the
+  // one actually staged, so every reason is weighed again against that copy.
+  for (const d of decisions.values()) {
+    for (const p of d.passedOver) {
+      const again = compareFor(p.copy, d.chosen);
+      if (!again.wins && again.reason) p.reason = again.reason;
+    }
+  }
+
+  return {
+    app,
+    staged,
+    decisions: staged.map((s) => decisions.get(s.manifest.name) ?? { name: s.manifest.name, chosen: s, passedOver: [] }),
+  };
+}
+
+/**
+ * The notes worth printing under a staged line, one line each.
+ *
+ * Two choices deserve a reader's attention, and only two. A local copy that
+ * lost by version is the one exception to "your local build is what gets
+ * tested", so it is named with its path. And a tie that build time could not
+ * break was settled by discovery order, not by evidence, which a reader should
+ * know before trusting that the newer build was the one staged.
+ *
+ * Each note starts with the app's name and a colon, which is how the header
+ * and `doctor` place it under that app's line.
+ */
+export function stagingNotes(plan: StagingPlan): string[] {
+  const out: string[] = [];
+  for (const d of plan.decisions) {
+    for (const p of d.passedOver) {
+      const where = displayArtifact(p.copy.artifact);
+      const v = p.copy.manifest.version ? ` ${p.copy.manifest.version}` : "";
+      if (p.reason === "lower-version" && p.copy.provenance === "local") {
+        out.push(
+          `${d.name}: passed over the local${v} at ${where}, for a lower version than the ` +
+            `${d.chosen.provenance} ${d.chosen.manifest.version ?? "copy"} staged`,
+        );
+      } else if (p.reason === "untimed-tie") {
+        out.push(
+          `${d.name}: passed over ${where} (${p.copy.provenance}, same version): the two could not be ` +
+            `ordered by build time, so the copy found first was kept`,
+        );
+      } else if (p.reason === "out-of-range") {
+        out.push(`${d.name}: passed over ${where}${v ? ` (${v.trim()})` : ""}, outside the version range the app declares`);
       }
     }
   }
+  // A dependency no copy satisfies is staged anyway: that is the only copy
+  // there is. But 0.3.0 will refuse to open the app, and the reason belongs
+  // next to the line that staged it.
+  for (const spec of plan.app.manifest.dependencySpecs ?? []) {
+    if (!spec.version) continue;
+    const chosen = plan.decisions.find((d) => d.name === spec.name)?.chosen;
+    if (!chosen || satisfiesRange(chosen.manifest.version, spec.version) !== false) continue;
+    out.push(
+      `${spec.name}: ${chosen.manifest.version ?? "this copy"} is outside the range ${spec.version} the app declares, ` +
+        `so Basecamp 0.3.0 will refuse to open the app`,
+    );
+  }
+  return out;
+}
 
-  return [...wanted].map((n) => byName.get(n)).filter((c): c is DiscoveredApp => c !== undefined);
+/** stagingNotes, grouped by app name, for the `note` of each staged record. */
+function notesFor(plan: StagingPlan): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const n of stagingNotes(plan)) {
+    const name = n.slice(0, n.indexOf(":"));
+    out.set(name, out.has(name) ? `${out.get(name)}; ${n.slice(name.length + 2)}` : n.slice(name.length + 2));
+  }
+  return out;
+}
+
+function sameArtifact(a: DiscoveredApp, b: DiscoveredApp): boolean {
+  const real = (p: string): string => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return real(a.artifact) === real(b.artifact);
 }
 
 /**
@@ -628,4 +935,30 @@ function short(p: string): string {
 
 export function appLabel(app: DiscoveredApp): string {
   return uiLabel(app.manifest);
+}
+
+/**
+ * Warnings about how this run's Basecamp was configured, one line each, for
+ * the run header. Today: what a caller's config.yaml (0.3.0) does to the log.
+ */
+export function bootNotes(b: Pick<Boot, "userDir">): string[] {
+  const logging = b.userDir?.loggingConfig;
+  if (!logging) return [];
+  const out: string[] = [];
+  if (logging.problem) {
+    out.push(`${logging.path} is not applied by Basecamp (${logging.problem}); it logs with its defaults`);
+    return out;
+  }
+  if (!logging.enabled) {
+    out.push(`${logging.path} sets logging.enabled: false, so Basecamp writes no log this run can read`);
+  } else if (!logging.console) {
+    out.push(
+      `${logging.path} sets logging.console: false, so Basecamp mirrors nothing to stdout; ` +
+        `reading ${path.join(logging.dir, logging.file)} instead`,
+    );
+  }
+  if (logging.enabled && path.resolve(logging.dir) !== path.resolve(b.userDir!.root, "logs")) {
+    out.push(`Basecamp's logs are in ${logging.dir}, as ${logging.path} says`);
+  }
+  return out;
 }

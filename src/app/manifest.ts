@@ -30,8 +30,21 @@ export interface AppManifest {
   icon?: string;
   /** Entry QML for ui_qml plugins, relative to the plugin root. */
   view?: string;
-  /** Core modules this app needs loaded before it will work. */
+  /**
+   * Core modules this app needs loaded before it will work, by name.
+   *
+   * A 0.3.0 manifest may write an entry as `{ name, version, signer }` rather
+   * than a bare name; the name lands here either way, and the rest in
+   * `dependencySpecs`.
+   */
   dependencies: string[];
+  /**
+   * Modules the app uses when present and does without when not (0.3.0).
+   * Staged when they can be found; never a reason to refuse a run.
+   */
+  optional_dependencies?: string[];
+  /** The object-form dependency entries, with their version range and signer. */
+  dependencySpecs?: DependencySpec[];
   /**
    * Built manifests map variant -> shared library. An EMPTY map is meaningful:
    * it means the plugin is pure QML with no C++ view module, so Basecamp runs
@@ -39,6 +52,37 @@ export interface AppManifest {
    */
   main?: Record<string, string> | string;
   [key: string]: unknown;
+}
+
+/** A dependency written as an object (Basecamp 0.3.0's readDependencyEntry). */
+export interface DependencySpec {
+  name: string;
+  /** A version range, e.g. "^1.2". */
+  version?: string;
+  signer?: string;
+}
+
+/**
+ * A dependency entry's name and constraints, or null when it is neither a
+ * name nor an object with one. 0.2.2 read only the string form and skipped
+ * the rest; 0.3.0 accepts both, so both are read here.
+ */
+function dependencyEntry(v: unknown): DependencySpec | null {
+  if (typeof v === "string") return v.length > 0 ? { name: v } : null;
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.name !== "string" || o.name.length === 0) return null;
+  const out: DependencySpec = { name: o.name };
+  if (typeof o.version === "string" && o.version.length > 0) out.version = o.version;
+  if (typeof o.signer === "string" && o.signer.length > 0) out.signer = o.signer;
+  return out;
+}
+
+/** "tip_core ^1.2 (signer abc)", for a header line. */
+export function describeDependency(name: string, m: AppManifest): string {
+  const spec = m.dependencySpecs?.find((d) => d.name === name);
+  if (!spec) return name;
+  return [name, spec.version, spec.signer ? `(signer ${spec.signer})` : undefined].filter(Boolean).join(" ");
 }
 
 export interface LoadedManifest {
@@ -70,7 +114,7 @@ export function readManifestDir(dir: string): LoadedManifest | null {
       malformed.push({ file: p, reason: (err as Error).message });
       continue;
     }
-    const manifest = normalise(raw, p);
+    const manifest = normaliseManifest(raw, p);
     if (!manifest) continue;
     const out: LoadedManifest = { manifest, source: p };
     const variantFile = path.join(dir, "variant");
@@ -83,20 +127,61 @@ export function readManifestDir(dir: string): LoadedManifest | null {
   return null;
 }
 
-function normalise(raw: unknown, source: string): AppManifest | null {
+/**
+ * Turn parsed manifest JSON into an AppManifest, or null if it is not one.
+ *
+ * Exported because a .lgx carries its manifest inside a tarball and used to be
+ * normalised by a second, hand-rolled copy of this logic in discover.ts - which
+ * meant a fix applied here left that route still broken. One manifest, one
+ * place that decides what it is.
+ */
+export function normaliseManifest(raw: unknown, source: string): AppManifest | null {
   if (typeof raw !== "object" || raw === null) return null;
   const o = raw as Record<string, unknown>;
   if (typeof o.name !== "string" || o.name.length === 0) return null;
-  const deps = Array.isArray(o.dependencies) ? o.dependencies.filter((d): d is string => typeof d === "string") : [];
+  const entries = (v: unknown): DependencySpec[] =>
+    Array.isArray(v) ? v.map(dependencyEntry).filter((d): d is DependencySpec => d !== null) : [];
+  const deps = entries(o.dependencies);
   const m: AppManifest = {
     ...o,
     name: o.name,
     type: typeof o.type === "string" ? o.type : "unknown",
-    dependencies: deps,
+    dependencies: [...new Set(deps.map((d) => d.name))],
   };
-  if (typeof o.version === "string") m.version = o.version;
-  if (typeof o.display_name === "string") m.display_name = o.display_name;
-  if (typeof o.view === "string") m.view = o.view;
+  const specs = deps.filter((d) => d.version !== undefined || d.signer !== undefined);
+  if (specs.length > 0) m.dependencySpecs = specs;
+  else delete m.dependencySpecs;
+  if (o.optional_dependencies !== undefined) {
+    const optional = [...new Set(entries(o.optional_dependencies).map((d) => d.name))].filter((n) => !m.dependencies.includes(n));
+    if (optional.length > 0) m.optional_dependencies = optional;
+    else delete m.optional_dependencies;
+  }
+  // The spread above carries arbitrary extra keys through on purpose: AppManifest
+  // has an index signature, and a BUILT manifest ships `hashes`, `manifestVersion`
+  // and more that nothing here declares. What it also did was pre-seed the
+  // DECLARED optionals with whatever the JSON held, while the guards that stood
+  // here only ever overwrote and never deleted - so `"version": 2` survived on a
+  // field typed `string`. A number then reached compareVersions and took
+  // discovery down with `a.split is not a function`, and reached esc(), which
+  // lost BOTH machine artifacts of a run that had already passed. Neither needed
+  // a malformed app: one stray manifest.json anywhere in the discovery sweep was
+  // enough, and that is exactly how it was found.
+  //
+  // A manifest is somebody else's file. A declared type it does not honour is
+  // dropped here, once, so every reader downstream can trust the type it was
+  // promised instead of re-deriving that guard and forgetting it somewhere.
+  for (const key of ["version", "display_name", "description", "category", "icon", "view"]) {
+    if (typeof m[key] !== "string") delete m[key];
+  }
+  // `main` gets its own clause because it is the one declared field that is not
+  // a string: a variant map, or a single library path. `null` is the spelling
+  // that hurt - neither undefined nor a string, so isPureQml fell past both its
+  // guards into `Object.keys(null)` and took down a boot that had already
+  // launched Basecamp. An empty map is meaningful and must survive; an array is
+  // not a variant map and must not.
+  if (!(typeof m.main === "string" || (typeof m.main === "object" && m.main !== null && !Array.isArray(m.main)))) {
+    delete m.main;
+  }
   void source;
   return m;
 }

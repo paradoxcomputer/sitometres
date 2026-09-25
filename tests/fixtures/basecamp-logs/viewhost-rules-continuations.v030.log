@@ -1,0 +1,14 @@
+logos.viewhost: ui-host package_manager_ui : PackageDownloader: rejected a `{tstr: any}` value: "expected object at value, got null"
+[2026-09-24 23:08:04.698] [debug] [logos] [package_downloader] Debug: ModuleProxy: callRemoteMethod "listRepositories" args: 0
+logos.viewhost: ui-host package_manager_ui : LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "listRepositories"
+[LogosObject] RemoteLogosObject::callMethodAsync "listRepositories" args: 0
+[2026-09-24 23:08:04.698] [debug] [logos] [package_downloader] Debug: [LogosProviderObject] ModuleProxy: forwarding event "__logos_call_complete__" as Qt signal
+logos.viewhost: ui-host package_manager_ui : LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getCatalog"
+logos.viewhost: ui-host package_manager_ui : [LogosObject] RemoteLogosObject::callMethodAsync "getCatalog" args: 0
+[2026-09-24 23:08:04.699] [debug] [logos] [package_downloader] Debug: ModuleProxy: callRemoteMethod "getCatalog" args: 0
+[2026-09-24 23:08:15.176] [debug] [logos] [package_downloader] Debug: [LogosProviderObject] ModuleProxy: forwarding event "__logos_call_complete__" as Qt signal
+[2026-09-24 23:08:15.191] [debug] [logos] [package_downloader] Debug: [LogosProviderObject] ModuleProxy: forwarding event "__logos_call_complete__" as Qt signal

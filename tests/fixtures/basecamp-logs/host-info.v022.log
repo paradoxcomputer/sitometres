@@ -1,0 +1,8 @@
+[2026-09-24 23:04:55.382] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setEmbeddedModulesDirectory" args: 1
+LogosAPIClient: invoking remote method "package_manager" "setUserModulesDirectory" args_count: 1
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "setUserModulesDirectory" args_count: 1 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "setUserModulesDirectory"
+[LogosObject] RemoteLogosObject::callMethod "setUserModulesDirectory" args: 1
+[2026-09-24 23:04:55.382] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setUserModulesDirectory" args: 1

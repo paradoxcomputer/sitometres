@@ -31,7 +31,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { isPureQml, isViewModule, readManifestDir } from "../dist/app/manifest.js";
+import { describeDependency, isPureQml, isViewModule, readManifestDir } from "../dist/app/manifest.js";
 import { detectWalletProvider } from "../dist/app/wallet.js";
 import { LogBuffer } from "../dist/logs/buffer.js";
 import { isBasecampInternalNoise, parseLine } from "../dist/logs/classify.js";
@@ -107,11 +107,13 @@ test("only a pure-QML plugin is offered a wallet, because only it has the bridge
   );
 });
 
-test("a manifest's dependency list keeps the strings and drops everything else", () => {
+test("a manifest's dependency list keeps the names and drops everything else", () => {
   // These names are joined into paths and resolved as modules to stage
   // (session.ts builds `new Set([name, ...dependencies, ...--with])`), so a
   // number or an object surviving the filter becomes a staging path built out
-  // of "42" or "[object Object]".
+  // of "42" or "[object Object]". An object with a string `name` is the one
+  // exception: that is Basecamp 0.3.0's dependency entry, and only its name
+  // lands in the list.
   const dir = tmp("sito-manifest-");
   fs.writeFileSync(
     path.join(dir, "manifest.json"),
@@ -122,7 +124,7 @@ test("a manifest's dependency list keeps the strings and drops everything else",
     }),
   );
   const loaded = readManifestDir(dir);
-  assert.deepEqual(loaded.manifest.dependencies, ["medusa_core", "zonescan_core"]);
+  assert.deepEqual(loaded.manifest.dependencies, ["medusa_core", "logos_core", "zonescan_core"]);
   assert.equal(loaded.manifest.name, "tip_jar");
 
   const noDeps = tmp("sito-manifest-");
@@ -139,6 +141,64 @@ test("a manifest's dependency list keeps the strings and drops everything else",
     [],
     "a scalar where a list belongs must not become one dependency per character",
   );
+});
+
+test("dependencySpecs carries a version and signer, and describeDependency formats them for a header", () => {
+  const dir = tmp("sito-manifest-");
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      name: "tip_jar",
+      type: "ui_qml",
+      dependencies: [{ name: "medusa_core", version: "^1.2.0", signer: "abc123" }, "logos_core"],
+    }),
+  );
+  const { manifest } = readManifestDir(dir);
+  assert.deepEqual(manifest.dependencies, ["medusa_core", "logos_core"]);
+  assert.equal(describeDependency("medusa_core", manifest), "medusa_core ^1.2.0 (signer abc123)");
+  assert.equal(
+    describeDependency("logos_core", manifest),
+    "logos_core",
+    "a plain string dependency recorded no spec, so only its name prints",
+  );
+  assert.equal(
+    describeDependency("never_declared", manifest),
+    "never_declared",
+    "a name the manifest does not mention at all still prints as itself",
+  );
+});
+
+test("optional_dependencies keeps only names the required list has not already claimed", () => {
+  const dir = tmp("sito-manifest-");
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      name: "tip_jar",
+      type: "ui_qml",
+      dependencies: ["medusa_core"],
+      optional_dependencies: ["medusa_core", "package_downloader", 7, null],
+    }),
+  );
+  const { manifest } = readManifestDir(dir);
+  assert.deepEqual(
+    manifest.optional_dependencies,
+    ["package_downloader"],
+    "already-required names, and anything that is not a dependency entry, are dropped",
+  );
+
+  // An optional list that ends up empty once required names are dropped is
+  // not carried at all, the same as if the manifest had never declared one.
+  const dir2 = tmp("sito-manifest-");
+  fs.writeFileSync(
+    path.join(dir2, "manifest.json"),
+    JSON.stringify({
+      name: "tip_jar",
+      type: "ui_qml",
+      dependencies: ["medusa_core"],
+      optional_dependencies: ["medusa_core"],
+    }),
+  );
+  assert.equal(readManifestDir(dir2).manifest.optional_dependencies, undefined);
 });
 
 // --- what the log buffer keeps, and how a wait ends --------------------------
@@ -816,4 +876,70 @@ test("a profile that stops early narrates through the caller's stream, not strai
   }
   assert.deepEqual(quiet.lines, [], "nothing reaches stdout under quiet narration");
   assert.match(errs.join("\n"), /2 later step\(s\) were not attempted/, "and it is not simply lost");
+});
+
+test("a manifest field declared a string but written as something else is dropped, not carried", () => {
+  // Found the hard way: one stray manifest.json under /tmp, holding
+  // `"version": 2`, was picked up by the discovery sweep and took this repo's
+  // own suite down. The spread that builds the manifest carries arbitrary extra
+  // keys through on purpose, but it also pre-seeded the DECLARED optionals with
+  // whatever the JSON held, and the guards only overwrote, never deleted. A
+  // number then reached compareVersions (`a.split is not a function`) and esc()
+  // (`s.replace is not a function`, losing both artifacts of a PASSING run).
+  const dir = tmp("sito-manifest-");
+  fs.writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      name: "demo_ui",
+      type: "ui_qml",
+      version: 2,
+      view: 123,
+      display_name: { a: 1 },
+      description: ["nope"],
+      icon: 7,
+      category: false,
+      // Undeclared keys a BUILT manifest really ships. These must survive.
+      hashes: { linux: "abc" },
+      manifestVersion: 3,
+    }),
+  );
+  const m = readManifestDir(dir).manifest;
+
+  for (const key of ["version", "view", "display_name", "description", "icon", "category"]) {
+    assert.equal(m[key], undefined, `${key} was not a string, so nothing downstream may be handed it`);
+  }
+  assert.equal(m.name, "demo_ui");
+  assert.deepEqual(m.hashes, { linux: "abc" }, "an undeclared key is still carried through");
+
+  // `main` is the one declared field that is not a string, and `null` is the
+  // spelling that hurt: isPureQml fell past both its guards into
+  // Object.keys(null) and threw, taking down a boot that had already launched
+  // Basecamp. An EMPTY map is meaningful - it means pure QML - so it must
+  // survive; an array is not a variant map and must not.
+  const mainCase = (main) => {
+    const d = tmp("sito-manifest-");
+    fs.writeFileSync(path.join(d, "manifest.json"), JSON.stringify({ name: "demo_ui", type: "ui_qml", main }));
+    return readManifestDir(d).manifest;
+  };
+  assert.equal(mainCase(null).main, undefined, "null is not a variant map");
+  assert.equal(mainCase(7).main, undefined);
+  assert.equal(mainCase([]).main, undefined, "nor is an array");
+  assert.deepEqual(mainCase({}).main, {}, "an empty map is meaningful and survives");
+  assert.deepEqual(mainCase({ "linux-amd64": "libdemo.so" }).main, { "linux-amd64": "libdemo.so" });
+  assert.equal(mainCase("libdemo.so").main, "libdemo.so");
+  for (const main of [null, 7, []]) {
+    assert.equal(isPureQml(mainCase(main)), true, "a dropped main reads as absent, which is what isPureQml means by pure");
+  }
+  assert.equal(m.manifestVersion, 3, "dropping mistyped DECLARED fields must not become dropping everything");
+
+  // A well-formed manifest is untouched by any of this.
+  const good = tmp("sito-manifest-");
+  fs.writeFileSync(
+    path.join(good, "manifest.json"),
+    JSON.stringify({ name: "demo_ui", type: "ui_qml", version: "9.9.9", view: "Main.qml", display_name: "Demo" }),
+  );
+  const ok = readManifestDir(good).manifest;
+  assert.equal(ok.version, "9.9.9");
+  assert.equal(ok.view, "Main.qml");
+  assert.equal(ok.display_name, "Demo");
 });

@@ -32,6 +32,12 @@ export interface Selector {
   clickable?: boolean;
   /** Require the control to accept text (used by type steps). */
   editable?: boolean;
+  /**
+   * Where an action looks for the control. Omitted: the app the step is in.
+   * `shell`: Basecamp's own dialogs, which 0.3.0 draws outside every app
+   * (the intent chooser, dependency and uninstall confirmations).
+   */
+  in?: "shell";
 }
 
 export type SelectorInput = string | Selector;

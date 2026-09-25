@@ -1,0 +1,6 @@
+RemoteTransportConnection: Connecting to registry: "local:logos_no_such_module_sito_811bd28fbbff" at "23:11:15.608"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_no_such_module_sito_811bd28fbbff"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_811bd28fbbff" at "23:11:15.608"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_capability_module_811bd28fbbff"
+LogosAPIConsumer: '"no_such_module_sito"::""' deferred pending the module becoming reachable
+LogosAPIConsumer: '"no_such_module_sito"::""' still not reachable after 3592 ms -- subscription is DEFERRED, not lost; it will arm when the module appears. Is the module loaded?

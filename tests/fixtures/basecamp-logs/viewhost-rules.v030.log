@@ -1,0 +1,5 @@
+logos.viewhost: spawning "/nix/store/yf8mbqrxkgw0kjyfgs8f4491rjx9vypz-logos-basecamp-0.3.0/bin/ui-host" for "zonescan_lite"
+logos.viewhost: ui-host zonescan_lite : ui-host: loaded plugin "zonescan_lite" from "/tmp/sito-userdir/plugins/zonescan_lite/zonescan_lite_plugin.so"
+logos.viewhost: ui-host zonescan_lite : ui-host: called initLogos on plugin "zonescan_lite"
+logos.viewhost: ui-host zonescan_lite : ui-host: remoting enabled for "zonescan_lite"
+logos.viewhost: process ready for "zonescan_lite"

@@ -1,0 +1,5 @@
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "noSuchMethodXyz"
+[LogosObject] RemoteLogosObject::callMethodAsync "noSuchMethodXyz" args: 0
+RemoteLogosObject: async callMethod timed out

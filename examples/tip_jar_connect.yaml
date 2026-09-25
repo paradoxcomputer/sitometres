@@ -1,0 +1,114 @@
+# A dApp asks, the wallet approves: one spec that drives two apps.
+#
+#   sitometres run examples/tip_jar_connect.yaml --junit connect.xml
+#
+# Tip Jar is the app under test. The wallet it asks (medusa_ui) and the core
+# module both of them call are staged beside it with `with:`, so all three run
+# in the same throwaway Basecamp. Two things make the flow one spec:
+#
+#   open: <app>                 moves selectors and the default root to that
+#                               app. Any UI app the run staged can be named,
+#                               by module name or display label.
+#   state: { expr, in: <app> }  evaluates in another opened app's root and
+#                               leaves the current app where it is.
+#
+# The wallet's front door is walked by profiles/medusa_ui.yaml the first time
+# the spec opens the wallet: it creates and unlocks a throwaway wallet against
+# the run's $HOME. That happens first because the wallet only shows a dApp's
+# request over an unlocked wallet. Tip Jar has no gate, so nothing runs for it.
+#
+# Selectors are the objectNames in each app's own Main.qml: `tipConnectButton`
+# in medusa's examples/tip-jar/qml/Main.qml, `connectApproveButton` in
+# module/plugins/medusa_ui/qml/Main.qml. The state names (`phase`, `account`,
+# `connectSheet`, `connAccountSel`) are read from the same two files.
+#
+# What this does NOT need: a zone that settles anything. Connecting is a
+# handshake between the two apps and the core; no transaction is sent.
+
+app: tip_jar
+with: [medusa_ui, medusa_core]
+timeout: 60s
+
+# Background polls, not anything a click caused: the wallet asks the core for
+# pending requests every 1200ms, and Tip Jar asks for its request's status and
+# the wallet's zone while it waits. Every 10s the wallet also refreshes its
+# status, sequencer, accounts, wallet and lock state (getTorProgress on a Tor
+# zone), and reads tokens, history and a private sync's progress on timers of
+# its own. Any of these can fail on its own schedule inside a step's window,
+# and without them here a `calls_succeed:` on the connect or approve step would
+# blame the click for it.
+ignore_calls:
+  - "medusa_core.pendingRequests"
+  - "medusa_core.actionStatus"
+  - "medusa_core.getJob"
+  - "medusa_core.getZones"
+  - "medusa_core.getStatus"
+  - "medusa_core.getSequencerStatus"
+  - "medusa_core.getTorProgress"
+  - "medusa_core.listAccounts"
+  - "medusa_core.getSecurityState"
+  - "medusa_core.getWalletState"
+  - "medusa_core.getTokens"
+  - "medusa_core.getTransactions"
+  - "medusa_core.syncPrivateStatus"
+
+steps:
+  - name: the wallet is set up first
+    comment: >-
+      Its first open runs the wallet's setup profile, which creates and unlocks
+      a throwaway wallet. A request made before that would wait behind the lock
+      screen.
+    open: medusa_ui
+    timeout: 180s
+
+  - name: Tip Jar opens, idle
+    open: tip_jar
+    expect:
+      state: "root.phase === 'idle'"
+
+  - name: the dApp asks to connect
+    click: { objectName: "tipConnectButton" }
+    expect:
+      state: "root.phase === 'connecting'"
+      calls: ["medusa_core.connectRequest"]
+      calls_succeed: true
+
+  # Watched from Tip Jar: the expression runs in the wallet's root, and Tip Jar
+  # stays the app selectors resolve in. `armed` is the wallet's own delay before
+  # Approve accepts a click.
+  - name: the request reaches the wallet
+    wait_for:
+      state: { expr: "connectSheet.visible && connectSheet.armed", in: medusa_ui }
+    expect:
+      state: "root.phase === 'connecting'"
+
+  - name: switch to the wallet to approve
+    open: medusa_ui
+    expect:
+      text:
+        - text: "wants to connect to your wallet"
+          match: contains
+
+  # The first account is exposed by setting the picker's selection, which is
+  # what a click on its row (`connectAccount_0`) does, without depending on the
+  # row being scrolled into view.
+  - name: expose the wallet's first account
+    eval: "root.connAccountSel = (function () { var o = {}; o[accountModel.get(0).id] = true; return o })()"
+
+  - name: approve the connection
+    click: { objectName: "connectApproveButton" }
+    expect:
+      calls: ["medusa_core.approveConnect"]
+      calls_succeed: true
+
+  - name: back to Tip Jar
+    open: tip_jar
+
+  # Tip Jar polls the request's status, so the connection lands a poll later.
+  - name: it is connected
+    wait_for:
+      state: "root.phase === 'connected' && root.account !== ''"
+    expect:
+      text: ["Connected account"]
+      # And the wallet agrees: its sheet is gone once the request was answered.
+      state: { expr: "!connectSheet.visible", in: medusa_ui }

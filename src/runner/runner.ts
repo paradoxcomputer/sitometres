@@ -14,20 +14,29 @@
 // session, and only the delta since the click is attributable to it.
 // ---------------------------------------------------------------------------
 
-import { sleep } from "../inspector/client.js";
+import { type InspectorClient, sleep } from "../inspector/client.js";
 import type { LogCursor } from "../logs/buffer.js";
-import { callName, callsIn, explainOpenFailure, pairFailures, parseLine } from "../logs/classify.js";
+import { CallWindowTracker, callName, callsIn, explainOpenFailure, pairFailures, parseLine } from "../logs/classify.js";
 import type { Session } from "../app/lifecycle.js";
-import { type Expect, parseDuration, type Spec, type Step } from "../spec/schema.js";
+import { asArray, evalTarget, type Expect, parseDuration, type Spec, type Step } from "../spec/schema.js";
 import { type ActionContext, displayText, doClick, doEval, doSet, doType, snapshot } from "./actions.js";
-import { allMonotone, type Check, runChecks, settled, type Verdict, verdictOf } from "./assert.js";
-import { openApp, openOptionsFor, OpenError } from "./open.js";
-import { type AppManifest, uiLabel } from "../app/manifest.js";
+import { allMonotone, type Check, type InTarget, runChecks, settled, type Verdict, verdictOf } from "./assert.js";
+import { type AppScope, locateScope, openApp, openOptionsFor, OpenError } from "./open.js";
+import { type AppManifest, isViewModule, uiLabel } from "../app/manifest.js";
+import { ChannelTracker } from "./fidelity.js";
 import { status } from "../report/status.js";
-import { SelectorError } from "./selector.js";
-import type { UiSnapshot } from "./snapshot.js";
+import { resolveAll, type SelectorInput, SelectorError, toSelector } from "./selector.js";
+import { UiSnapshot } from "./snapshot.js";
 import { unlockWallet, type WalletProvider } from "../app/wallet.js";
 import { createDebugREPL, type DebugContext, type DebugCallbacks } from "./debug.js";
+import {
+  commandTimeoutFor,
+  DEFAULT_CALL_WINDOW_MS,
+  DEFAULT_RUN_SETTLE_MS,
+  defaultStepTimeout,
+  describeBudget,
+  hasDeadline,
+} from "../timeouts.js";
 
 type DebugPauseFn = () => Promise<"next" | "continue" | "quit">;
 
@@ -41,6 +50,36 @@ export function isBreakpointComment(comment: string | undefined): boolean {
   return comment !== undefined && /\bbreakpoints?\b/i.test(comment);
 }
 
+/**
+ * The half of a step's `comment:` that was written for a reader.
+ *
+ * `comment:` does two jobs. It is where an author says what a step is FOR, and
+ * it is also how a spec marks a breakpoint — README, SKILL and the shipped
+ * example all spell that `# breakpoint: <why>`. A directive is an instruction
+ * to the runner, not something to narrate back: printing "# breakpoint" into a
+ * report of a run that never paused (CI has no --debug) describes a pause that
+ * did not happen. So the marker is dropped and only the `<why>` survives.
+ *
+ * Filtered here rather than in each writer so the terminal, the JSON and any
+ * later reader cannot disagree about what counts as prose.
+ *
+ * The typeof guard is not decoration: validateStep allowlists `comment:`
+ * without checking its type, and `comment: # breakpoint` — unquoted, which is
+ * how a YAML comment is written everywhere else — parses as null. That reached
+ * isBreakpointComment harmlessly because RegExp.test stringifies its argument;
+ * anything reaching for .replace would take the run down at step one.
+ */
+export function commentProse(comment: string | undefined): string | undefined {
+  if (typeof comment !== "string") return undefined;
+  // The leading `#` is decoration carried over from writing YAML comments, not
+  // part of the sentence.
+  const text = comment.replace(/^\s*#+\s*/, "").trim();
+  if (!isBreakpointComment(text)) return text === "" ? undefined : text;
+  const colon = text.indexOf(":");
+  const why = colon === -1 ? "" : text.slice(colon + 1).trim();
+  return why === "" ? undefined : why;
+}
+
 export interface StepResult {
   index: number;
   name: string;
@@ -50,9 +89,32 @@ export interface StepResult {
   checks: Check[];
   /** Backend calls seen during the step, whether or not they were asserted. */
   callsObserved: string[];
+  /**
+   * The step's `comment:`, as INTENT — what the author said the step is for.
+   *
+   * Authored before the run existed, so it is not evidence and never belongs in
+   * a Check: a `description` or a `detail` is what this run found, and prose
+   * sitting there would read as a claim the tool never made. It travels in a
+   * field of its own for exactly that reason. Absent, not empty, when the
+   * comment was only a breakpoint directive — see commentProse.
+   */
+  comment?: string;
   /** Populated when the step blew up rather than merely failing a check. */
   error?: string;
   screenshot?: string;
+  /**
+   * Module name of the app the step ran in: the current app once the step's
+   * action was done, so an `open:` records the app it opened. Absent until
+   * some app has been opened.
+   */
+  app?: string;
+}
+
+/** A staged app, as much of it as opening one needs. */
+export interface StagedAppRef {
+  manifest: AppManifest;
+  slot: string;
+  artifact: string;
 }
 
 export interface RunResult {
@@ -68,22 +130,58 @@ export interface RunnerOptions {
   appName: string | null;
   /** Manifest of the app under test, for resolving `open:` to its two names. */
   manifest?: AppManifest;
+  /**
+   * Every app the run staged, the app under test included. `open:` and `in:`
+   * resolve against these, so a spec can move between a dApp and the wallet
+   * it asks. Absent, the app under test is the only one there is.
+   */
+  apps?: StagedAppRef[];
   /** The discovered app, so the open hint can describe its staged directory. */
   app?: { manifest: { view?: string }; slot: string };
   /** Root of the staged user-dir, for the same reason. */
   userDirRoot?: string;
   /**
-   * How long to wait for an app to open. Separate from a step's timeout:
-   * opening is not the step's work, and a short step budget used to make the
-   * open unpassable.
+   * The $HOME the app under test was given, and what a relative `file:` path
+   * resolves against.
+   *
+   * Null when this run chose none. Not the same as "there was no sandbox":
+   * --real-home means the app really did see the developer's own $HOME and a
+   * spec written against it keeps working, while attach mode means nothing was
+   * chosen at all. See appHomeFor in ../session.ts.
+   */
+  appHome?: string | null;
+  /**
+   * How long to wait for an app to open, when neither the `open:` step's own
+   * `timeout:` nor the spec's `open_timeout:` says. Separate from a step's
+   * timeout: opening is not the step's work, and a short step budget used to
+   * make the open unpassable.
    */
   openTimeoutMs?: number;
+  /**
+   * True when `openTimeoutMs` was chosen for opening (--open-timeout), so it is
+   * honoured as given. Otherwise it is the startup --timeout reaching the open
+   * for compatibility, and the open's floor applies. See openApp.
+   */
+  openTimeoutExplicit?: boolean;
+  /** --step-timeout: a step's budget when neither the step nor the spec sets one. */
+  stepTimeoutMs?: number;
+  /**
+   * --command-timeout: the longest one inspector command may block, when
+   * neither the step nor the spec sets `command_timeout`.
+   */
+  commandTimeoutMs?: number;
+  /**
+   * --call-timeout: the Logos bridge's reply window, when the spec does not
+   * declare `call_timeout`. Without either it is read from the log.
+   */
+  callTimeoutMs?: number;
   logsUsable: boolean;
   /** Where screenshots go. */
   artifactDir?: string;
   /**
    * Minimum time to observe the app after a gesture before accepting a clean
-   * result that includes a negative expectation. See pollChecks().
+   * result that includes a negative expectation, when neither the step nor
+   * the spec sets `settle` (--settle). See pollChecks().
    */
   settleMs?: number;
   /**
@@ -109,25 +207,96 @@ export interface RunnerOptions {
   /** Whether to continue execution without pausing (after 'continue' command) */
   continueExecution?: boolean;
   /**
-   * Run once, as soon as the app is open and any wallet is unlocked.
+   * Run after every `open:`, with the module just opened, once any wallet is
+   * unlocked.
    *
    * This is where a setup profile belongs for `run`: after the spec's `open:`
    * has established the scope, before any of its assertions. A callback rather
-   * than a Spec so the runner keeps no dependency on profile discovery — and so
-   * the profile's own nested runner cannot recurse into another one.
+   * than a Spec so the runner keeps no dependency on profile discovery, and so
+   * the profile's own nested runner cannot recurse into another one. Which
+   * profile belongs to which app, and running each once, is the caller's
+   * bookkeeping: the runner only says what it opened.
    *
    * A profile that did not complete becomes a failing check on the open step,
    * because that is the step during which the gate was supposed to be walked,
    * and everything the spec asserts afterwards is about the wrong screen.
+   *
+   * `scope` is where that app was just found, so a profile run for it can
+   * start inside that app's dock rather than across the whole window.
    */
-  onOpened?: () => Promise<{ failed: string | null }>;
+  onOpened?: (moduleName: string, scope: OpenedScope) => Promise<{ failed: string | null }>;
+  /**
+   * Start with this app already open and current, as if a step had opened it.
+   *
+   * For a setup profile run from inside another run, once more than one app's
+   * dock exists. A runner that has opened nothing resolves selectors against
+   * the whole window and evaluates `state:` wherever the inspector falls back
+   * to, which is the first QQuickWidget's root: with a dApp's dock and the
+   * wallet's both in the tree, the wallet's profile could type into the dApp's
+   * field and read the dApp's properties. Seeded, it acts in its own app.
+   */
+  initialScope?: { module: string; scope: OpenedScope };
+}
+
+/** An opened app's scope, plus the view that finds its root again. */
+export type OpenedScope = AppScope & { view?: string };
+
+/**
+ * What one step may spend, resolved once when the step starts.
+ *
+ * Most specific wins: the step, then the spec's header, then the command
+ * line, then a default derived from the bridge's reply window.
+ */
+export interface StepBudget {
+  /** The step's whole budget, action plus expectations. Infinity means none. */
+  timeoutMs: number;
+  /** The deadline of every inspector command the step issues. */
+  commandMs: number;
+  /** The least time a clean negative expectation is watched. */
+  settleMs: number;
+  /** The bridge's reply window these were derived from. */
+  callWindowMs: number;
+  /** A `timeout:` written on the step itself, which an `open:` honours as its budget. */
+  ownTimeoutMs?: number;
+}
+
+/**
+ * How long a clean negative expectation is watched before it is accepted.
+ *
+ * The step's settle, whatever the action left of its budget. `settle: none`
+ * means the step's whole `timeout:`: a clean result that could never be
+ * accepted would make every step with a negative check unpassable.
+ */
+function settleOf(b: Pick<StepBudget, "settleMs" | "timeoutMs">): number {
+  return hasDeadline(b.settleMs) ? b.settleMs : b.timeoutMs;
 }
 
 export class Runner {
-  private scopeId: string | null = null;
-  private qmlRootId: string | null = null;
-  private readonly defaultTimeout: number;
-  private readonly settleMs: number;
+  /** Module name of the app selectors and the default root belong to. */
+  private current: string | null = null;
+  /** Every app opened so far, by module name. Docks are hidden, not destroyed. */
+  private readonly scopes = new Map<string, OpenedScope>();
+  /**
+   * True when the spec's `open:` steps and `in:` targets name more than one
+   * app. Decided from the spec before step 1, because the terminal prints each
+   * step as it finishes and cannot wait to learn whether a second app opens.
+   */
+  readonly multiApp: boolean;
+  /** The module an `open:` in progress is opening, for its failure diagnosis. */
+  private opening: string | null = null;
+  /** The spec header's durations, parsed once. Undefined when the header is silent. */
+  private readonly header: {
+    timeout?: number;
+    command?: number;
+    call?: number;
+    open?: number;
+    settle?: number;
+    openSettle?: number;
+  };
+  /** The bridge's reply window, as far as the log has shown it. */
+  private readonly callWindows = new CallWindowTracker();
+  /** Which of the host-debug and ui-host channels the log has shown so far. */
+  private readonly channelTracker = new ChannelTracker();
   /** Log cursor marking the start of the step in progress, for debug inspection. */
   private stepCursor: LogCursor | null = null;
   /** Checks produced by a wait_for action, awaiting attachment to its step. */
@@ -148,16 +317,25 @@ export class Runner {
   private skipPauses = false;
   /** True when the spec marks any step as a breakpoint. See shouldPauseBefore. */
   private readonly hasSpecBreakpoints: boolean;
-  /** A spec may `open:` more than once; the setup profile runs after the first. */
-  private openedHookRan = false;
 
   constructor(private readonly opts: RunnerOptions) {
-    // Above the transport's own 20 s reply timeout, deliberately: at 15 s a
-    // call that timed out could not be seen to have timed out, because the
-    // step's evidence window had already closed before the failure was logged.
-    this.defaultTimeout = parseDuration(opts.spec.timeout, 30_000);
-    this.settleMs = opts.settleMs ?? 1_000;
+    const spec = opts.spec;
+    const read = (v: number | string | undefined): number | undefined =>
+      v === undefined ? undefined : parseDuration(v, 0);
+    this.header = {
+      timeout: read(spec.timeout),
+      command: read(spec.commandTimeout),
+      call: read(spec.callTimeout),
+      open: read(spec.openTimeout),
+      settle: read(spec.settle),
+      openSettle: read(spec.openSettle),
+    };
     this.hasSpecBreakpoints = opts.spec.steps.some((s) => isBreakpointComment(s.comment));
+    this.multiApp = this.namedApps().size > 1;
+    if (opts.initialScope) {
+      this.scopes.set(opts.initialScope.module, opts.initialScope.scope);
+      this.current = opts.initialScope.module;
+    }
 
     // Initialize debug mode if session has debug context
     if (this.opts.session.debug) {
@@ -247,26 +425,265 @@ export class Runner {
   }
 
   /**
-   * Turn whatever the spec said into the module name and the sidebar label.
+   * Turn whatever the spec said into a staged app's module name and label.
    *
-   * Falls back to using the name for both when no manifest is available — an
-   * --attach run has no discovered app — which is the old behaviour, and is
-   * correct when the two names coincide.
+   * An app has two names, and a spec may use either: the module name docks,
+   * the display label is what the sidebar shows. Every UI app the run staged
+   * can be named, the spec's own and each one in `with:`; a staged core module
+   * fails at once, since there is no dock to wait for.
+   *
+   * Falls back to using the name for both when no manifest is available (an
+   * --attach run has no discovered app), which is correct when the two names
+   * coincide.
    */
-  private resolveAppName(name: string): { moduleName: string; label: string } {
-    const m = this.opts.manifest;
-    if (!m) return { moduleName: name, label: name };
-    const label = uiLabel(m);
-    if (name === m.name || name === label) return { moduleName: m.name, label };
+  private resolveStagedApp(name: string, verb: "opens" | "evaluates in" = "opens"): { moduleName: string; label: string } {
+    const staged = this.stagedApps();
+    if (staged.length === 0) return { moduleName: name, label: name };
+    const hit = staged.find((a) => a.manifest.name === name || uiLabel(a.manifest) === name);
+    if (hit && isCore(hit)) {
+      throw new Error(
+        `this spec ${verb} "${name}", which is ${hit.manifest.name}, a core module with no UI. ` +
+          `It can name: ${this.nameableApps()}.`,
+      );
+    }
+    if (hit) return { moduleName: hit.manifest.name, label: uiLabel(hit.manifest) };
     throw new Error(
-      `this spec opens "${name}", but the app here is "${m.name}"` +
-        (label === m.name ? "" : ` (shown as "${label}")`) +
-        `. Use either spelling.`,
+      `this spec ${verb} "${name}", which is not a UI app this run staged. It can name: ${this.nameableApps()}. ` +
+        `Use either spelling, or stage the app with \`with:\`.`,
     );
   }
 
+  /** Every staged app, or the app under test alone when that is all there is. */
+  private stagedApps(): StagedAppRef[] {
+    if (this.opts.apps && this.opts.apps.length > 0) return this.opts.apps;
+    const m = this.opts.manifest;
+    if (!m) return [];
+    return [{ manifest: m, slot: this.opts.app?.slot ?? (m.type === "core" ? "modules" : "plugins"), artifact: "" }];
+  }
+
+  /** Both spellings of every staged UI app, for a message about a name that is neither. */
+  private nameableApps(): string {
+    const ui = this.stagedApps().filter((a) => !isCore(a));
+    if (ui.length === 0) return "(no UI app was staged)";
+    return ui
+      .map((a) => (uiLabel(a.manifest) === a.manifest.name ? a.manifest.name : `${a.manifest.name} ("${uiLabel(a.manifest)}")`))
+      .join(", ");
+  }
+
+  /** The distinct modules the spec's `open:` steps and `in:` targets name. */
+  private namedApps(): Set<string> {
+    const names = new Set<string>();
+    const add = (n: string): void => {
+      const hit = this.stagedApps().find((a) => a.manifest.name === n || uiLabel(a.manifest) === n);
+      names.add(hit ? hit.manifest.name : n);
+    };
+    for (const step of this.opts.spec.steps) {
+      if (typeof step.open === "string") add(step.open);
+      if (step.eval !== undefined) {
+        const t = evalTarget(step.eval);
+        if (t.in !== undefined) add(t.in);
+      }
+      for (const e of [step.expect, step.waitFor]) {
+        for (const entry of asArray(e?.state)) {
+          const t = evalTarget(entry);
+          if (t.in !== undefined) add(t.in);
+        }
+      }
+    }
+    return names;
+  }
+
+  /** The scope selectors and the default root belong to. */
+  private get currentScope(): OpenedScope | null {
+    return this.current === null ? null : (this.scopes.get(this.current) ?? null);
+  }
+
+  /** The current app's QML root, which a string `state:` and `eval:` evaluate in. */
+  private get qmlRootId(): string | null {
+    return this.currentScope?.qmlRootId ?? null;
+  }
+
+  /**
+   * The QML root of another opened app, for `in:`.
+   *
+   * The root's id was cached when that app was opened, and while the spec was
+   * busy elsewhere the app's QML may have reloaded. The real inspector does not
+   * fail an evaluation against an id it no longer knows: it quietly evaluates
+   * in the FIRST QQuickWidget's root instead, which is some other app. So the
+   * id is checked with a depth-0 tree read, which does fail on an unknown id,
+   * and a stale scope is found again once through the dock, the way opening it
+   * found it. Checked per evaluation because it is one small call; finding the
+   * scope again is a tree walk, and happens only when the check fails.
+   */
+  private async rootFor(name: string): Promise<InTarget> {
+    let target: { moduleName: string };
+    try {
+      target = this.resolveStagedApp(name, "evaluates in");
+    } catch (err) {
+      return { kind: "not-staged", detail: (err as Error).message };
+    }
+    const module = target.moduleName;
+    const scope = this.scopes.get(module);
+    if (!scope) {
+      return {
+        kind: "not-open",
+        module,
+        detail: `${module} has not been opened in this run, so it has no root to evaluate in yet. ` +
+          `Add an \`open: ${name}\` step before this one.`,
+      };
+    }
+    const inspector = this.opts.session.inspector;
+    if (scope.qmlRootId) {
+      try {
+        await inspector.getTree({ objectId: scope.qmlRootId, depth: 0 });
+        return { kind: "ok", module, rootId: scope.qmlRootId };
+      } catch {
+        /* stale: find it again below */
+      }
+    }
+    let again: AppScope | null = null;
+    try {
+      again = await locateScope(inspector, module, scope.view);
+    } catch {
+      /* reported below */
+    }
+    if (again?.qmlRootId) {
+      this.scopes.set(module, { ...again, ...(scope.view ? { view: scope.view } : {}) });
+      return { kind: "ok", module, rootId: again.qmlRootId };
+    }
+    return {
+      kind: "no-root",
+      module,
+      detail: scope.qmlRootId
+        ? `${module}'s QML root is gone, and looking for it again in its dock found none`
+        : `${module} is open, but its dock holds no QML type matching the \`view\` its manifest declares`,
+    };
+  }
+
+  /**
+   * The Logos bridge's reply window: declared in the spec, else on the command
+   * line, else the largest `timeout: N` the log has shown on a synchronous
+   * dispatch so far, else the stock 20 s.
+   *
+   * Asked again at every step, so a Basecamp built with a longer window is
+   * followed as soon as its first call is logged.
+   */
+  callWindow(): number {
+    const declared = this.header.call ?? this.opts.callTimeoutMs;
+    if (declared !== undefined) return declared;
+    const logs = this.opts.session.logs;
+    const learned = typeof logs?.slice === "function" ? this.callWindows.observe(logs) : null;
+    return learned ?? DEFAULT_CALL_WINDOW_MS;
+  }
+
+  /**
+   * Everything a step may spend, resolved once as it starts.
+   *
+   * The step's `timeout:` defaults to 30 s, or the bridge window plus 10 s when
+   * that is longer: at 15 s a call that timed out could not be seen to have
+   * timed out, because the step's evidence window had closed before the
+   * failure was logged. Each inspector command in the step may take as long as
+   * the step itself, and never less than the bridge window plus 10 s, because
+   * a synchronous backend call holds the thread that answers the inspector
+   * until the bridge gives up. `command_timeout` decouples the two, for a long
+   * wait that should still notice a hung app quickly.
+   */
+  budgetFor(step: Step): StepBudget {
+    const read = (v: number | string | undefined): number | undefined =>
+      v === undefined ? undefined : parseDuration(v, 0);
+    const callWindowMs = this.callWindow();
+    const own = read(step.timeout);
+    const timeoutMs = own ?? this.header.timeout ?? this.opts.stepTimeoutMs ?? defaultStepTimeout(callWindowMs);
+    const commandMs =
+      read(step.commandTimeout) ??
+      this.header.command ??
+      this.opts.commandTimeoutMs ??
+      Math.max(timeoutMs, commandTimeoutFor(callWindowMs));
+    const settleMs = read(step.settle) ?? this.header.settle ?? this.opts.settleMs ?? DEFAULT_RUN_SETTLE_MS;
+    return { timeoutMs, commandMs, settleMs, callWindowMs, ...(own !== undefined ? { ownTimeoutMs: own } : {}) };
+  }
+
+  /**
+   * Run `fn` with every inspector command bounded by `ms`.
+   *
+   * Feature-detected: a hand-built inspector (the plain objects the tests
+   * drive) has no deadlines to scope, and runs `fn` as it is.
+   */
+  private scoped<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+    const inspector = this.opts.session.inspector as Partial<Pick<InspectorClient, "withCommandTimeout">>;
+    return typeof inspector.withCommandTimeout === "function" ? inspector.withCommandTimeout(ms, fn) : fn();
+  }
+
   private get ctx(): ActionContext {
-    return { inspector: this.opts.session.inspector, scopeId: this.scopeId };
+    return { inspector: this.opts.session.inspector, scopeId: this.currentScope?.scopeId ?? null };
+  }
+
+  /**
+   * Where an action's selector resolves: the current app, or Basecamp's own
+   * shell for a selector written `in: shell`.
+   *
+   * Basecamp 0.3.0 draws its dialogs (the intent chooser, dependency and
+   * uninstall confirmations) in an overlay outside every app's dock, so a
+   * selector scoped to the app can never reach them. `in: shell` resolves
+   * against that overlay (objectName "overlayDialogs"), or against the whole
+   * window on a build that has none.
+   */
+  private async ctxFor(sel: SelectorInput): Promise<ActionContext> {
+    if (typeof sel !== "object" || sel === null || sel.in !== "shell") return this.ctx;
+    const inspector = this.opts.session.inspector;
+    let overlay: string | null = null;
+    try {
+      const hit = (await inspector.findByProperty("objectName", "overlayDialogs"))?.matches?.[0];
+      overlay = hit ? String(hit.id) : null;
+    } catch {
+      /* no overlay to scope to: the whole window it is */
+    }
+    return { inspector, scopeId: overlay };
+  }
+
+  /**
+   * Run an action, and when its selector finds nothing in the app, say so if
+   * the control is in one of Basecamp's own dialogs instead. Asked only after
+   * the failure, so a passing action costs nothing, and only of a build that
+   * has the overlay (0.3.0).
+   */
+  private async shellHinted<T>(sel: SelectorInput, act: () => Promise<T>): Promise<T> {
+    try {
+      return await act();
+    } catch (err) {
+      if (!(err instanceof SelectorError) || (typeof sel === "object" && sel !== null && sel.in === "shell")) throw err;
+      const inspector = this.opts.session.inspector;
+      try {
+        const overlay = (await inspector.findByProperty("objectName", "overlayDialogs"))?.matches?.[0];
+        if (overlay) {
+          const snap = await UiSnapshot.capture(inspector, String(overlay.id));
+          if (resolveAll(snap, toSelector(sel)).length > 0) {
+            err.message +=
+              "\n  That control is in one of Basecamp's own dialogs, outside the app: add `in: shell` to the selector.";
+          }
+        }
+      } catch {
+        /* the hint is a courtesy; the selector's own error stands */
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * The channels the log has shown so far, when this run can read logs at all.
+   * Asked at each poll, so a channel that shows itself mid-step counts at once.
+   */
+  private channelsNow(): { hostDebug: boolean; viewHost: boolean } | undefined {
+    const logs = this.opts.session.logs;
+    if (!this.opts.logsUsable || typeof logs?.slice !== "function") return undefined;
+    return this.channelTracker.observe(logs);
+  }
+
+  /** The current app, when it is a view module (its calls come from a ui-host). */
+  private get viewModuleApp(): string | null {
+    if (this.current === null) return null;
+    const app = this.stagedApps().find((a) => a.manifest.name === this.current);
+    return app && isViewModule(app.manifest) ? this.current : null;
   }
 
   async run(): Promise<RunResult> {
@@ -360,20 +777,27 @@ export class Runner {
    * absent — the same distinction the whole verdict system rests on.
    */
   private stoppedAt(done: StepResult[], from: number, started: number, why: string): RunResult {
-    const rest = this.opts.spec.steps.slice(from).map((step, k) => ({
-      index: from + k,
-      name: step.name ?? describeAction(step),
-      action: describeAction(step),
-      verdict: "inconclusive" as const,
-      durationMs: 0,
-      checks: [{
-        kind: "state" as const,
-        description: "this step ran",
+    const rest = this.opts.spec.steps.slice(from).map((step, k) => {
+      // The author's own words survive an abort too. These steps are
+      // INCONCLUSIVE rather than absent precisely so a reader can place them,
+      // and "what was this step for" is most of placing one.
+      const prose = commentProse(step.comment);
+      return {
+        index: from + k,
+        name: step.name ?? describeAction(step),
+        action: describeAction(step),
         verdict: "inconclusive" as const,
-        detail: why,
-      }],
-      callsObserved: [] as string[],
-    }));
+        durationMs: 0,
+        checks: [{
+          kind: "state" as const,
+          description: "this step ran",
+          verdict: "inconclusive" as const,
+          detail: why,
+        }],
+        callsObserved: [] as string[],
+        ...(prose !== undefined ? { comment: prose } : {}),
+      };
+    });
     if (rest.length > 0) {
       (this.opts.onNote ?? ((l: string) => console.log(l)))(
         `\n  ${rest.length} later step(s) were not attempted: ${why}`,
@@ -418,13 +842,13 @@ export class Runner {
 
   private async runStep(step: Step, index: number): Promise<StepResult> {
     const started = Date.now();
-    const timeout = parseDuration(step.timeout, this.defaultTimeout);
     const cursor = this.opts.session.logs.mark();
     this.stepCursor = cursor;
     this.actionChecks = [];
     let action = describeAction(step);
     status.set("Running", `step ${index + 1}/${this.opts.spec.steps.length}: ${step.name ?? action}`);
 
+    const prose = commentProse(step.comment);
     const base: StepResult = {
       index,
       name: step.name ?? action,
@@ -433,10 +857,19 @@ export class Runner {
       durationMs: 0,
       checks: [],
       callsObserved: [],
+      ...(prose !== undefined ? { comment: prose } : {}),
     };
 
+    let budget: StepBudget | null = null;
+    let actionDone = started;
     try {
-      const performed = await this.perform(step, timeout);
+      // Resolved inside the try: validateSpec refuses a bad duration before
+      // anything launches, but a spec built by hand reaches here unchecked, and
+      // a budget that cannot be read fails this step instead of the whole run.
+      budget = this.budgetFor(step);
+      const b = budget;
+      const performed = await this.scoped(b.commandMs, () => this.perform(step, b));
+      actionDone = Date.now();
       if (performed) action = performed;
       base.action = action;
     } catch (err) {
@@ -447,8 +880,11 @@ export class Runner {
       // records why the app would not load, that replaces the hint entirely.
       let extra = "";
       if (err instanceof OpenError) {
-        const why = this.opts.appName
-          ? explainOpenFailure(this.opts.session.logs.slice(cursor).map(parseLine), this.opts.appName)
+        // Diagnosed against the app being opened, which is not always the
+        // spec's own: a `with:` app that did not compile has to be named.
+        const opening = this.opening ?? this.opts.appName;
+        const why = opening
+          ? explainOpenFailure(this.opts.session.logs.slice(cursor).map(parseLine), opening)
           : null;
         if (why) extra = `\n  ${why.split("\n").join("\n  ")}`;
         else if (err.hint) extra = `\n  ${err.hint}`;
@@ -457,8 +893,12 @@ export class Runner {
       base.verdict = "fail";
       base.durationMs = Date.now() - started;
       base.callsObserved = this.callsSince(cursor);
+      if (this.current !== null) base.app = this.current;
       return base;
+    } finally {
+      this.opening = null;
     }
+    if (this.current !== null) base.app = this.current;
 
     if (this.pendingChecks) {
       base.checks = this.pendingChecks;
@@ -469,10 +909,18 @@ export class Runner {
     const expect = step.expect;
     if (expect) {
       status.set("Running", `step ${index + 1}: checking ${describeExpect(expect)}`);
-      // Adjust timeout for time spent in debug mode
-      const adjustedTimeout = timeout - (Date.now() - started);
+      // Whatever is left of the step's budget, and never less than one look:
+      // a budget the action used up still gets its expectations checked once,
+      // rather than a hidden extra second. An `open:` that ran on the open
+      // budget is not charged to the step at all, since opening an app is not
+      // the step's work; one with a `timeout:` of its own spent that budget.
+      // The settle is not part of that budget: a negative expectation is
+      // watched for all of it however long the action took (see pollChecks).
+      const b = budget!;
+      const from = step.open !== undefined && b.ownTimeoutMs === undefined ? actionDone : started;
+      const left = Math.max(0, b.timeoutMs - (Date.now() - from));
       try {
-        base.checks = [...base.checks, ...(await this.pollChecks(expect, cursor, Math.max(adjustedTimeout, 1000)))];
+        base.checks = [...base.checks, ...(await this.scoped(b.commandMs, () => this.pollChecks(expect, cursor, left, settleOf(b))))];
         base.verdict = verdictOf(base.checks);
       } catch (err) {
         // Checking is where an app that died mid-step shows up: snapshot() hits
@@ -489,14 +937,16 @@ export class Runner {
   }
 
   /** Execute the action. Returns a refined description when it learned one. */
-  private async perform(step: Step, timeout: number): Promise<string | null> {
+  private async perform(step: Step, budget: StepBudget): Promise<string | null> {
     if (step.open !== undefined) {
-      await this.openApp(step.open, timeout);
+      await this.openApp(step.open, budget, step);
       return `opened ${step.open}`;
     }
-    if (step.click !== undefined) return (await doClick(this.ctx, step.click)).detail;
+    if (step.click !== undefined) {
+      return (await this.shellHinted(step.click, async () => doClick(await this.ctxFor(step.click!), step.click!))).detail;
+    }
     if (step.type !== undefined) {
-      const out = await doType(this.ctx, step.type);
+      const out = await this.shellHinted(step.type.into, async () => doType(await this.ctxFor(step.type!.into), step.type!));
       // An action that learned something must not have it discarded. `type:`
       // reads the field back, so it can know the text did not land — and that
       // used to survive only as prose while the step reported PASS with no
@@ -504,8 +954,10 @@ export class Runner {
       if (out.check) this.actionChecks.push({ kind: "state", ...out.check });
       return out.detail;
     }
-    if (step.set !== undefined) return (await doSet(this.ctx, step.set)).detail;
-    if (step.eval !== undefined) return (await doEval(this.ctx, step.eval, this.qmlRootId)).detail;
+    if (step.set !== undefined) {
+      return (await this.shellHinted(step.set.target, async () => doSet(await this.ctxFor(step.set!.target), step.set!))).detail;
+    }
+    if (step.eval !== undefined) return this.evaluateStep(step.eval);
     if (step.sleep !== undefined) {
       await sleep(parseDuration(step.sleep, 0));
       return null;
@@ -515,11 +967,11 @@ export class Runner {
       return `screenshot ${step.screenshot}`;
     }
     if (step.waitFor !== undefined) {
-      const checks = await this.pollChecks(step.waitFor, this.opts.session.logs.mark(), timeout);
+      const checks = await this.pollChecks(step.waitFor, this.opts.session.logs.mark(), budget.timeoutMs, settleOf(budget));
       const bad = checks.filter((c) => c.verdict === "fail");
       if (bad.length > 0) {
         throw new Error(
-          `waitFor never came true within ${timeout}ms:\n  ` +
+          `waitFor never came true within ${describeBudget(budget.timeoutMs)}:\n  ` +
             bad.map((c) => `${c.description}${c.detail ? ` — ${c.detail}` : ""}`).join("\n  "),
         );
       }
@@ -548,8 +1000,10 @@ export class Runner {
    * so the documented init -> run workflow could not succeed for any app with
    * a display_name. Either spelling is accepted; each is used for its own job.
    */
-  private async openApp(name: string, timeout: number): Promise<void> {
-    const { moduleName, label } = this.resolveAppName(name);
+  private async openApp(name: string, budget: StepBudget, step: Step): Promise<void> {
+    const { moduleName, label } = this.resolveStagedApp(name);
+    this.opening = moduleName;
+    const staged = this.stagedApps().find((a) => a.manifest.name === moduleName);
     // The same builder every other command uses. `run` was the one verb that
     // passed no staged path, so its open-failure hint lost the sentence that
     // separates "Basecamp declined it" from "staging failed" — the one thing
@@ -558,23 +1012,38 @@ export class Runner {
       this.opts.session.inspector,
       moduleName,
       label,
-      openOptionsFor(
-        this.opts.app ?? null,
-        this.opts.userDirRoot,
-        moduleName,
-        this.opts.openTimeoutMs,
-      ),
+      {
+        ...openOptionsFor(
+          staged ?? this.opts.app ?? null,
+          this.opts.userDirRoot,
+          moduleName,
+          this.openBudget(budget),
+        ),
+        ...(this.header.openSettle !== undefined ? { settleMs: this.header.openSettle } : {}),
+      },
     );
-    this.scopeId = scope.scopeId;
-    this.qmlRootId = scope.qmlRootId;
+    const view = staged?.manifest.view ?? this.opts.app?.manifest.view;
+    const opened: OpenedScope = { ...scope, ...(view ? { view } : {}) };
+    this.scopes.set(moduleName, opened);
+    this.current = moduleName;
+    // Only through the spec's own app. That is the app the wallet provider was
+    // detected for, and a password must never be handed to another app's
+    // bridge just because the spec opened it.
     const unlock = this.opts.walletUnlock;
-    if (unlock && this.qmlRootId) {
-      const why = await unlockWallet(this.opts.session.inspector, this.qmlRootId, unlock.provider, unlock.password);
+    if (unlock && scope.qmlRootId && moduleName === this.opts.appName) {
+      // The unlock is a synchronous backend call, and the app has just logged
+      // its first dispatches, which carry the bridge window this build really
+      // uses. The step's budget was resolved before any of them, so it is
+      // raised to that window here, unless a command deadline was chosen.
+      const chosen = step.commandTimeout ?? this.header.command ?? this.opts.commandTimeoutMs;
+      const unlockMs = chosen !== undefined ? budget.commandMs : Math.max(budget.commandMs, commandTimeoutFor(this.callWindow()));
+      const why = await this.scoped(unlockMs, () =>
+        unlockWallet(this.opts.session.inspector, scope.qmlRootId!, unlock.provider, unlock.password),
+      );
       if (why) throw new Error(`the wallet did not unlock: ${why}`);
     }
-    if (this.opts.onOpened && !this.openedHookRan) {
-      this.openedHookRan = true;
-      const outcome = await this.opts.onOpened();
+    if (this.opts.onOpened) {
+      const outcome = await this.opts.onOpened(moduleName, opened);
       if (outcome.failed) {
         this.actionChecks.push({
           kind: "state",
@@ -587,7 +1056,53 @@ export class Runner {
   }
 
   /**
+   * How long an `open:` may take, and whether someone chose that.
+   *
+   * The step's own `timeout:`, then the spec's `open_timeout:`, then the
+   * command line. A spec-level `timeout:` is deliberately not among them: it
+   * is every step's budget, and a short one used to make opening unpassable.
+   */
+  private openBudget(budget: StepBudget): { timeoutMs?: number; explicit: boolean } {
+    if (budget.ownTimeoutMs !== undefined) return { timeoutMs: budget.ownTimeoutMs, explicit: true };
+    if (this.header.open !== undefined) return { timeoutMs: this.header.open, explicit: true };
+    if (this.opts.openTimeoutMs !== undefined) {
+      return { timeoutMs: this.opts.openTimeoutMs, explicit: this.opts.openTimeoutExplicit === true };
+    }
+    return { explicit: false };
+  }
+
+  /**
+   * Perform an `eval:` step, in the current app or in the one `in:` names.
+   *
+   * An app that has not been opened, or a name that was not staged, is an
+   * error here rather than INCONCLUSIVE: an `eval:` is done for its side
+   * effect, and one that could not run leaves the app somewhere the rest of
+   * the spec does not expect.
+   */
+  private async evaluateStep(input: NonNullable<Step["eval"]>): Promise<string> {
+    const { expr, in: target } = evalTarget(input);
+    if (target === undefined) return (await doEval(this.ctx, expr, this.qmlRootId)).detail;
+    const where = await this.rootFor(target);
+    if (where.kind !== "ok") {
+      throw new Error(`cannot evaluate ${JSON.stringify(expr)} in ${target}: ${where.detail}`);
+    }
+    return `${(await doEval(this.ctx, expr, where.rootId)).detail} in ${where.module}`;
+  }
+
+  /** The app under test, then every app opened so far: whose errors count. */
+  private attributedApps(): string[] {
+    const out: string[] = [];
+    if (this.opts.appName) out.push(this.opts.appName);
+    for (const m of this.scopes.keys()) if (!out.includes(m)) out.push(m);
+    return out;
+  }
+
+  /**
    * Retry the expectations until they hold or the step runs out of time.
+   *
+   * They are always checked at least once, however little time is left. A
+   * poll can overshoot `timeout` by one round of commands, each bounded by the
+   * step's command deadline.
    *
    * `settleMs` is the floor on how long a step must observe the app before a
    * clean result may be accepted. It exists because the inspector POSTS mouse
@@ -598,24 +1113,37 @@ export class Runner {
    * done anything, so accepting it immediately grades a click that has not
    * landed. Measured before this: pass after 27 ms, the forbidden call arrived
    * 300 ms later.
+   *
+   * The settle is kept apart from `timeout`, which is only what the action
+   * left of the step's budget. Capping one by the other let a slow action
+   * leave no settle at all, and a negative expectation passed on its first
+   * look while the forbidden call was still on its way. So a clean result is
+   * watched for the whole settle, past the deadline if need be; a failing one
+   * stops at the deadline, as it always has.
    */
-  private async pollChecks(expect: Expect, cursor: LogCursor, timeout: number): Promise<Check[]> {
+  private async pollChecks(expect: Expect, cursor: LogCursor, timeout: number, settleMs: number): Promise<Check[]> {
     const started = Date.now();
     const deadline = started + timeout;
-    const settleUntil = started + Math.min(this.settleMs, timeout);
+    const settleUntil = started + settleMs;
     let last: Check[] = [];
     for (;;) {
       const snap: UiSnapshot = await snapshot(this.ctx);
       const window = this.opts.session.logs.slice(cursor).map(parseLine);
+      const channels = this.channelsNow();
       last = await runChecks(
         {
           inspector: this.opts.session.inspector,
           snapshot: snap,
           window,
           qmlRootId: this.qmlRootId,
-          appName: this.opts.appName,
+          appNames: this.attributedApps(),
+          rootFor: (name) => this.rootFor(name),
           logsUsable: this.opts.logsUsable,
+          ...(channels ? { channels } : {}),
+          viewModuleApp: this.viewModuleApp,
           ignoreCalls: this.opts.spec.ignoreCalls ?? [],
+          appHome: this.opts.appHome ?? null,
+          userDirRoot: this.opts.userDirRoot ?? null,
           cursor,
         },
         expect,
@@ -631,7 +1159,9 @@ export class Runner {
       // definitively failed spun until its deadline — the verdict was final in
       // the first second and the user waited out the whole 30 s default.
       if (settled(last)) return last;
-      if (now >= deadline) return last;
+      // Past the deadline only a clean result that has not yet been watched
+      // for its settle is looked at again.
+      if (now >= deadline && !clean) return last;
       await sleep(250);
     }
   }
@@ -651,7 +1181,7 @@ export class Runner {
     }
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const shot = await this.opts.session.inspector.screenshot(this.scopeId ?? undefined);
+    const shot = await this.opts.session.inspector.screenshot(this.currentScope?.scopeId ?? undefined);
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, name.endsWith(".png") ? name : `${name}.png`);
     fs.writeFileSync(file, Buffer.from(shot.image, "base64"));
@@ -665,6 +1195,7 @@ function describeExpect(e: Expect): string {
   if (e.state !== undefined) bits.push("app state");
   if (e.calls !== undefined) bits.push("backend calls");
   if (e.console !== undefined) bits.push("console output");
+  if (e.file !== undefined) bits.push("a file on disk");
   return bits.length ? bits.join(" + ") : "the result";
 }
 
@@ -676,7 +1207,10 @@ function describeAction(step: Step): string {
   // report, the JSON and the JUnit.
   if (step.type !== undefined) return `type ${displayText(step.type.text, step.type.secret)}`;
   if (step.set !== undefined) return `set ${step.set.property}`;
-  if (step.eval !== undefined) return `eval ${JSON.stringify(step.eval)}`;
+  if (step.eval !== undefined) {
+    const t = evalTarget(step.eval);
+    return `eval ${JSON.stringify(t.expr)}${t.in !== undefined ? ` in ${t.in}` : ""}`;
+  }
   if (step.sleep !== undefined) return `sleep ${step.sleep}`;
   if (step.screenshot !== undefined) return `screenshot`;
   if (step.waitFor !== undefined) return "wait for";
@@ -687,4 +1221,9 @@ function selText(sel: unknown): string {
   if (typeof sel === "string") return sel;
   const o = sel as { text?: string; objectName?: string; type?: string };
   return o.text ?? o.objectName ?? o.type ?? "(selector)";
+}
+
+/** A staged app with no UI to open. */
+function isCore(a: StagedAppRef): boolean {
+  return a.slot === "modules" || a.manifest.type === "core";
 }

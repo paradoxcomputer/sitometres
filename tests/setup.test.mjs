@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  findNamedSetupSpec,
   findSetupSpec,
   loadSetupSpec,
   profilesDir,
@@ -249,6 +250,24 @@ test("a profile parses into a spec, ignore list and all", () => {
   assert.deepEqual(medusa.ignoreCalls, ["medusa_core.pendingRequests", "medusa_core.getJob"]);
 });
 
+test("a profile may be an ignore list and nothing else", () => {
+  // A spec with no steps is refused — it can only report a pass it did not earn
+  // — but a profile is not graded, and its `ignore_calls:` is load-bearing on
+  // its own: smoke reads it off the parsed profile before the open step, so an
+  // app with a background poll and no gate to walk through has a profile worth
+  // writing and no steps to put in it. Refused here, it would come back null
+  // from loadSetupSpec and the crawl would run with NO ignore list — the same
+  // swallowed refusal that made every inert control report `ran`.
+  const file = write(
+    path.join(tmp("sito-nosteps-"), ".sitometres", "pollster_ui.setup.yaml"),
+    ["app: pollster_ui", "ignore_calls:", '  - "pollster.pendingRequests"', "steps: []", ""].join("\n"),
+  );
+  const { value, out } = captured(() => loadSetupSpec(file));
+  assert.deepEqual(out, [], "it is not a refusal, so nothing is narrated");
+  assert.deepEqual(value.ignoreCalls, ["pollster.pendingRequests"], "the crawl's ignore list survives");
+  assert.deepEqual(value.steps, []);
+});
+
 test("a profile that does not parse is null, not a throw part-way through a run", () => {
   const dir = tmp("sito-bad-");
   const cases = [
@@ -410,4 +429,34 @@ test("a profile that stops early does not narrate into a stdout carrying a docum
   assert.deepEqual(out, [], "nothing may reach stdout when a caller has taken the note");
   assert.equal(notes.length, 1);
   assert.match(notes[0], /1 later step\(s\) were not attempted/);
+});
+
+// --- a profile for an app in `with:` ----------------------------------------
+//
+// A dApp spec stages the wallet with `with:`, and opening the wallet has to
+// walk the wallet's gate. Only a profile written for the wallet BY NAME may do
+// that: the directory's unnamed profile belongs to whatever app that directory
+// is about, and typing its gate into the wallet would be worse than nothing.
+
+test("findNamedSetupSpec ignores the unnamed spellings", () => {
+  const { repo, appDir } = checkout();
+  write(path.join(repo, ".sitometres", "setup.yaml"), PROFILE);
+  write(path.join(repo, "sitometres.setup.yaml"), PROFILE);
+  assert.equal(findNamedSetupSpec(repo, "gatekeeper_ui", appDir), null);
+  // The spec app's own finder would have taken either of them.
+  assert.equal(findSetupSpec(repo, "gatekeeper_ui", appDir), path.join(repo, ".sitometres", "setup.yaml"));
+});
+
+test("findNamedSetupSpec finds <app>.setup.yaml, nearest first", () => {
+  const { repo, appDir } = checkout();
+  const named = write(path.join(repo, "gatekeeper_ui.setup.yaml"), PROFILE);
+  assert.equal(findNamedSetupSpec(tmp("sito-elsewhere-"), "gatekeeper_ui", appDir), named);
+  const nearer = write(path.join(repo, ".sitometres", "gatekeeper_ui.setup.yaml"), PROFILE);
+  assert.equal(findNamedSetupSpec(repo, "gatekeeper_ui", appDir), nearer);
+});
+
+test("findNamedSetupSpec falls back to a shipped profiles/<app>.yaml", () => {
+  const cwd = tmp("sito-noprofile-");
+  assert.equal(findNamedSetupSpec(cwd, "medusa_ui", null), path.join(profilesDir(), "medusa_ui.yaml"));
+  assert.equal(findNamedSetupSpec(cwd, "nobody_wrote_one", null), null);
 });

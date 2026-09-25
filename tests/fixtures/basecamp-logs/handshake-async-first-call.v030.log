@@ -1,0 +1,21 @@
+RemoteTransportConnection: Connecting to registry: "local:logos_package_manager_811bd28fbbff" at "23:11:12.571"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_package_manager_811bd28fbbff"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_811bd28fbbff" at "23:11:12.571"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_capability_module_811bd28fbbff"
+LogosAPIConsumer: '"package_manager"::""' deferred pending the module becoming reachable
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 745782224
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: No token found for module: "package_manager"
+LogosAPIClient: getToken for module: "capability_module"
+LogosAPIClient: Found token for module: "capability_module"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:11:12.581"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 747414160
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "requestModule"
+[LogosObject] RemoteLogosObject::callMethodAsync "requestModule" args: 2
+[2026-09-24 23:11:12.584] [warning] [logos] [capability_module] Warning: QObject::connect: No such signal ::eventResponse(QString,QVariantList)
+RemoteTransportConnection: Requesting object: "package_manager" at "23:11:12.587"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_manager"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 743108016
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getInstalledPackages"
+[LogosObject] RemoteLogosObject::callMethodAsync "getInstalledPackages" args: 0

@@ -1,0 +1,1 @@
+[2026-09-24 22:58:36.439] [warning] [logos] [capability_module] Warning: QObject::connect: No such signal ::eventResponse(QString,QVariantList)

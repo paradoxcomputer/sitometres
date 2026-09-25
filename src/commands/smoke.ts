@@ -15,8 +15,18 @@
 // ---------------------------------------------------------------------------
 
 import { sleep } from "../inspector/client.js";
-import { callName, callsIn, explainOpenFailure, parseLine, pairFailures, type PairedFailure, UNATTRIBUTED } from "../logs/classify.js";
-import { boot, type BootOptions, type CommandDeps, REAL_DEPS } from "../session.js";
+import {
+  callName,
+  callsIn,
+  explainOpenFailure,
+  parseLine,
+  pairFailures,
+  type PairedFailure,
+  UNATTRIBUTED,
+} from "../logs/classify.js";
+import { boot, type BootOptions, bootNotes, type CommandDeps, OutsideDeadline, REAL_DEPS, stagingNotes } from "../session.js";
+import { DEFAULT_SMOKE_SETTLE_MS, describeSeconds, hasDeadline, openBudgetFrom } from "../timeouts.js";
+import type { StagedRecord } from "../app/fingerprint.js";
 import type { InspectorClient } from "../inspector/client.js";
 import { normaliseText } from "../runner/selector.js";
 import { isClickableType, UiSnapshot } from "../runner/snapshot.js";
@@ -24,16 +34,16 @@ import { openApp, openOptionsFor, OpenError } from "../runner/open.js";
 import { unlockWallet } from "../app/wallet.js";
 import { classifyOutcome, describeOutcome, type Outcome } from "../runner/outcome.js";
 import { suppressedBy } from "../runner/assert.js";
-import { printHeader } from "../report/terminal.js";
+import { printHeader, wrapText } from "../report/terminal.js";
 import { defaultReportPath, printReport, type RunReport, writeReport } from "../report/runreport.js";
 import { status } from "../report/status.js";
 import fs from "node:fs";
 import path from "node:path";
 
-import { uiLabel } from "../app/manifest.js";
+import { isViewModule, uiLabel } from "../app/manifest.js";
 import { findSetupSpec, profilesDir, resolveSetupSpec, runSetupProfile } from "../runner/setup.js";
-import type { FidelityReport } from "../runner/fidelity.js";
-import { crawlToMachineReport, type MachineReport, toJson, toJUnit } from "../report/machine.js";
+import { ChannelTracker, type FidelityReport, VIEW_HOST_REMEDY } from "../runner/fidelity.js";
+import { buildSourceOf, crawlToMachineReport, type BuildSource, type MachineReport, toJson, toJUnit } from "../report/machine.js";
 import { VERSION } from "../version.js";
 
 // The same rule every other reporter here follows. The crawl painted its lines
@@ -65,7 +75,7 @@ export interface SmokeOptions extends BootOptions {
   noReport?: boolean;
   /** Stop after this many controls. Default 12. */
   limit?: number;
-  /** Milliseconds to observe after each click. Default 2500. */
+  /** Milliseconds to observe after each click. Default 2500. Must be finite: a crawl sleeps it. */
   settleMs?: number;
   /** Labels to leave alone, e.g. anything destructive. */
   skip?: string[];
@@ -112,8 +122,9 @@ export interface ClickWindow {
  * on its own — a failure is already accounted for ONLY if the click that
  * dispatched it also SAW it fail, i.e. the dispatch and the failure line fell
  * inside one window. Testing the anchor alone dropped every timeout, because
- * the transport gives up at 20 s and a click is watched for 2.5 s, so the
- * failure line is always in a later window or in none.
+ * the transport gives up at the bridge's reply window (20 s on stock
+ * Basecamp) and a click is watched for 2.5 s, so the failure line is always in
+ * a later window or in none.
  */
 export function reconcileLateFailures(
   paired: Iterable<[number, PairedFailure]>,
@@ -255,7 +266,7 @@ export const DESTRUCTIVE = new RegExp(
 
 export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DEPS): Promise<number> {
   const limit = opts.limit ?? 12;
-  const settleMs = opts.settleMs ?? 2500;
+  const settleMs = opts.settleMs ?? DEFAULT_SMOKE_SETTLE_MS;
   const t0 = Date.now();
   // boot() can throw — no Basecamp, no app, staging refused — and until now
   // that produced no artifact at all: a CI job that asked for --junit got exit
@@ -279,6 +290,15 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     const app = b.app;
     const appName = app?.manifest.name ?? null;
 
+    // Computed once and spent everywhere. The header and every machine
+    // artifact have to name the same build; two independently-built
+    // descriptions of it is how they come to disagree.
+    const source = buildSourceOf(app);
+    // What was staged, with hashes: in the header and in every artifact this
+    // crawl writes from here on, the failure exits included, because a red
+    // job's artifact is the one somebody opens to ask which bytes failed.
+    const staged: StagedRecord[] = b.stagedRecords ?? [];
+
     printHeader({
       app: appName ?? "(attached)",
       appType: app?.manifest.type ?? "unknown",
@@ -297,7 +317,11 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
       headless: opts.headless !== false,
       inspectorPort: b.session.port,
       ...(b.walletSummary ? { wallet: b.walletSummary } : {}),
-      ...(b.app ? { source: { origin: b.app.origin, form: b.app.form, builtAt: b.app.builtAt, ...(b.app.manifest.version ? { version: b.app.manifest.version } : {}) } } : {}),
+      ...(source ? { source } : {}),
+      staged,
+      stagingNotes: b.plan ? stagingNotes(b.plan) : [],
+      ...(b.session.launchEnv ? { launchEnv: b.session.launchEnv } : {}),
+      notes: bootNotes(b),
     });
 
     if (!appName) {
@@ -325,6 +349,16 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     ];
 
     // --- open it ----------------------------------------------------------
+    //
+    // Every command from here on runs outside a spec step, on a deadline that
+    // follows the bridge window the log shows: --call-timeout, else the
+    // largest `timeout: N` seen so far, else the stock 20 s, plus a margin.
+    // Re-read before the open, before the unlock and before every click, so a
+    // Basecamp built with a longer window is followed as soon as it says so.
+    // --command-timeout, when given, is the deadline outright.
+    const deadline = new OutsideDeadline(b.session, opts);
+    const callWindow = (): number => deadline.callWindow();
+    deadline.follow();
     const openCursor = b.session.logs.mark();
     const label = uiLabel(app!.manifest);
     let scope: Awaited<ReturnType<typeof openApp>>;
@@ -333,7 +367,7 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         b.session.inspector,
         appName,
         label,
-        openOptionsFor(b.app, b.userDir?.root, appName, opts.timeoutMs),
+        openOptionsFor(b.app, b.userDir?.root, appName, openBudgetFrom(opts)),
       );
     } catch (err) {
       console.log(`  ${RED}FAIL${RST}  open ${appName}`);
@@ -349,13 +383,16 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
       emitArtifacts(
         opts,
         stillbornReport(appName, b.basecamp?.path ?? "(attached)", b.fidelity, Date.now() - t0,
-          `open ${appName}`, "fail", why ?? e.hint ?? e.message),
+          `open ${appName}`, "fail", why ?? e.hint ?? e.message, source, staged),
       );
       return 1;
     }
 
     // --- unlock, if a password was given ----------------------------------
     // Needs the app's QML root, which only exists now, so boot could not do it.
+    // The app has just logged its first dispatches, so the deadline is read
+    // again: the unlock is a synchronous backend call of its own.
+    deadline.follow();
     if (b.walletUnlock && scope.qmlRootId) {
       const why = await unlockWallet(
         b.session.inspector,
@@ -373,7 +410,7 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     const openEvidence = summarise(b, openCursor, appName, ignoreCalls);
 
     // --- setup ---------------------------------------------------------
-    const setupOutcome = await runSetupProfile(b, resolvedSetup, appName, "crawl");
+    const setupOutcome = await runSetupProfile(b, resolvedSetup, appName, "crawl", undefined, undefined, { module: appName, scope });
     const setupSteps = setupOutcome.steps;
     const setupFailed = setupOutcome.failed;
     if (setupFailed) problems++;
@@ -390,6 +427,22 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     );
     for (const e of openEvidence.errors.slice(0, 3)) console.log(`        ${RED}${e}${RST}`);
     for (const f of openEvidence.failedCalls.slice(0, 3)) console.log(`        ${RED}${f} failed${RST}`);
+
+    // A view module's calls, QML errors and console output all come from its
+    // ui-host process. If none of that process's output has reached the log by
+    // now, it is not going to (0.3.0 needs the logos.viewhost rule for it), and
+    // a click that "did nothing" would be a claim about evidence nobody read.
+    // So the crawl grades as it would on a quiet build.
+    const viewHostSilent =
+      b.fidelity.fidelity === "verbose" &&
+      app !== null && app !== undefined && isViewModule(app.manifest) &&
+      !new ChannelTracker().observe(b.session.logs).viewHost;
+    if (viewHostSilent) {
+      console.log(`\n  ${YEL}!${RST} ${appName} runs in a ui-host process whose output is not reaching this run.`);
+      for (const l of wrapText(VIEW_HOST_REMEDY, 74)) console.log(`    ${DIM}${l}${RST}`);
+      console.log("");
+    }
+    const logsReadable = b.fidelity.fidelity === "verbose" && !viewHostSilent;
 
     // --- crawl --------------------------------------------------------------
     //
@@ -421,7 +474,6 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     const unreachable: string[] = [];
     /** Each click's evidence window, for reconciling failures that arrive late. */
     const windows: Array<{ label: string; from: number; to: number }> = [];
-
     if (queue.length === 0) {
       console.log(`\n  ${YEL}!${RST} no clickable controls found in ${appName}. Try \`sitometres inspect --hidden\`.\n`);
       // Inconclusive, not pass: the crawl opened the app and then proved
@@ -433,6 +485,8 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         version: VERSION,
         app: appName,
         basecamp: b.basecamp?.path ?? "(attached)",
+        ...(source ? { source } : {}),
+        staged,
         sandboxHome: b.sandboxHome,
         fidelity: b.fidelity,
         durationMs: Date.now() - t0,
@@ -510,6 +564,9 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         continue;
       }
 
+      // Before every click, so the commands that follow a slow synchronous
+      // call wait past the bridge's own timeout (see the open, above).
+      deadline.follow();
       snap = await UiSnapshot.capture(b.session.inspector, scope.scopeId);
       const before = new Set(snap.labels());
       let reachedBy = "directly";
@@ -595,7 +652,7 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         newMessageLabels,
         appName,
         ignoreCalls,
-        logsUsable: b.fidelity.fidelity === "verbose",
+        logsUsable: logsReadable,
         failures: mine,
       });
 
@@ -720,9 +777,9 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
 
     // --- failures that arrived after their click's window closed -------------
     //
-    // The transport gives up on a reply after 20 s; a crawl observes each click
-    // for 2.5 s. So a timeout can NEVER land in the window of the click that
-    // caused it. Until now it either fell in an innocent later click's window —
+    // The transport gives up on a reply after the bridge's reply window (20 s
+    // on stock Basecamp); a crawl observes each click for 2.5 s. So a timeout
+    // can NEVER land in the window of the click that caused it. Until now it either fell in an innocent later click's window —
     // where pairFailures would pop THAT click's healthy dispatch and report it
     // as confidently failed — or landed in a gap and was dropped entirely, and
     // the run exited 0 having silently discarded a real failure.
@@ -739,9 +796,11 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         : [];
     if (orphanFailures.length > 0) {
       problems += orphanFailures.length;
+      const window = callWindow();
+      const reply = hasDeadline(window) ? `a reply times out at ${describeSeconds(window)}` : "a reply has no timeout";
       console.log(
         `\n  ${RED}${orphanFailures.length} call(s) failed after their click's window${RST} ` +
-          `${DIM}(a reply times out at 20s; a click is watched for ${settleMs}ms)${RST}`,
+          `${DIM}(${reply}; a click is watched for ${settleMs}ms)${RST}`,
       );
       for (const name of orphanFailures.slice(0, 6)) console.log(`        ${RED}${name} failed${RST}`);
       if (orphanFailures.length > 6) console.log(`        ${DIM}…and ${orphanFailures.length - 6} more${RST}`);
@@ -810,7 +869,7 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     // failing on it made --strict fail every healthy crawl and left no usable
     // CI gate at all.
     const provedNothing = crawlProvedNothing(results);
-    const evidenceUnreadable = b.fidelity.fidelity !== "verbose";
+    const evidenceUnreadable = !logsReadable;
 
     let inconclusive = 0;
     if (opts.junit || opts.json || opts.strict) {
@@ -818,6 +877,8 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
         version: VERSION,
         app: appName,
         basecamp: b.basecamp?.path ?? "(attached)",
+        ...(source ? { source } : {}),
+        staged,
         fidelity: b.fidelity,
         durationMs: Date.now() - t0,
         open: { ok: !openBad, errors: openEvidence.errors },
@@ -885,7 +946,8 @@ export async function smoke(opts: SmokeOptions = {}, deps: CommandDeps = REAL_DE
     emitArtifacts(
       opts,
       stillbornReport(b.app?.manifest.name ?? null, b.basecamp?.path ?? "(attached)", b.fidelity,
-        Date.now() - t0, "complete the crawl", "fail", (err as Error).message),
+        Date.now() - t0, "complete the crawl", "fail", (err as Error).message, buildSourceOf(b.app),
+        b.stagedRecords ?? []),
     );
     throw err;
   } finally {
@@ -907,8 +969,25 @@ function emitArtifacts(
   opts: SmokeOptions,
   machine: MachineReport,
 ): { inconclusive: number } {
-  if (opts.json) writeOut(opts.json, toJson(machine));
-  if (opts.junit) writeOut(opts.junit, toJUnit(machine));
+  // Independently, and neither allowed to throw. Every caller here is on a path
+  // that has already decided what the crawl found; a writer that fails must not
+  // take the other artifact, or the exit code, down with it. On the recovery
+  // path it was worse than losing one file: the throw re-entered the catch that
+  // called this, so the stillborn JSON landed and results.xml never did.
+  if (opts.json) {
+    try {
+      writeOut(opts.json, toJson(machine));
+    } catch (err) {
+      console.error(`  --json could not be written: ${(err as Error).message}`);
+    }
+  }
+  if (opts.junit) {
+    try {
+      writeOut(opts.junit, toJUnit(machine));
+    } catch (err) {
+      console.error(`  --junit could not be written: ${(err as Error).message}`);
+    }
+  }
   return { inconclusive: machine.steps.filter((x) => x.verdict === "inconclusive").length };
 }
 
@@ -930,12 +1009,18 @@ function stillbornReport(
   what: string,
   verdict: "fail" | "inconclusive",
   detail: string,
+  /** The build that failed, when one was staged. The red path needs this most. */
+  source?: BuildSource,
+  /** Every staged artifact and its hash, when the run got far enough to stage. */
+  staged: StagedRecord[] = [],
 ): MachineReport {
   return {
     tool: "sitometres",
     version: VERSION,
     app: appName,
     basecamp,
+    ...(source ? { source } : {}),
+    ...(staged.length ? { staged } : {}),
     fidelity,
     verdict,
     durationMs,

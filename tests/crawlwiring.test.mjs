@@ -24,6 +24,14 @@ import assert from "node:assert/strict";
 import { LogBuffer } from "../dist/logs/buffer.js";
 import { parseLine, pairFailures, UNATTRIBUTED } from "../dist/logs/classify.js";
 import { reconcileLateFailures, crawlExitCode, crawlProvedNothing } from "../dist/commands/smoke.js";
+import { DIALECTS, dialectTest } from "./helpers/basecamp-logs.mjs";
+
+// Every case below runs once per Basecamp dialect: 0.3.0 split the transport's
+// failure line in two, and a verdict must not depend on which one printed it.
+// SYNC_FAIL is the line each version really printed (tests/fixtures).
+for (const DIALECT of DIALECTS) {
+const test = dialectTest(DIALECT);
+const SYNC_FAIL = DIALECT.syncFail;
 
 // Line shapes copied from the real corpus in
 // ~/.local/share/Logos/LogosBasecampDev/logs: the module-qualified dispatch,
@@ -32,7 +40,7 @@ import { reconcileLateFailures, crawlExitCode, crawlProvedNothing } from "../dis
 const dispatch = (mod, method, args) =>
   `LogosAPIClient: invoking remote method "${mod}" "${method}" args_count: ${args}`;
 const transport = (method, args) => `[LogosObject] RemoteLogosObject::callMethod "${method}" args: ${args}`;
-const TIMED_OUT = "RemoteLogosObject: callRemoteMethod failed or timed out: 1";
+const TIMED_OUT = SYNC_FAIL;
 
 /**
  * A crawl's log, with one window per click recorded exactly as the crawl
@@ -239,3 +247,4 @@ test("a crawl whose only failure arrived after its window still exits 1", () => 
   assert.equal(problems, 2);
   assert.equal(crawlExitCode({ problems, provedNothing: false, evidenceUnreadable: false }), 1);
 });
+}

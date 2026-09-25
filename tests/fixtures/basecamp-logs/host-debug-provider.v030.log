@@ -1,0 +1,3 @@
+[2026-09-24 23:07:44.193] [debug] [logos] [capability_module] Debug: [LogosProviderObject] LogosAPIProvider: detected LogosProviderPlugin for "capability_module"
+[2026-09-24 23:07:44.193] [debug] [logos] [capability_module] Debug: [LogosProviderObject] LogosAPIProvider: registering LogosProviderObject directly for "capability_module"
+[2026-09-24 23:07:44.193] [debug] [logos] [capability_module] Debug: [LogosProviderObject] ModuleProxy: created, wrapping LogosProviderObject "capability_module"

@@ -15,7 +15,7 @@ import { run } from "./commands/run.js";
 import { smoke } from "./commands/smoke.js";
 import { homeAndWallet } from "./app/wallet.js";
 import { BootError, type CommandDeps, REAL_DEPS } from "./session.js";
-import { SpecError } from "./spec/schema.js";
+import { DURATION_FORMS, parseDuration, SpecError } from "./spec/schema.js";
 import { SelectorError } from "./runner/selector.js";
 import { InspectorTransportError } from "./inspector/protocol.js";
 import { VERSION } from "./version.js";
@@ -57,7 +57,9 @@ COMMON OPTIONS — every command
 
 APP OPTIONS — smoke, run, inspect, init
   Each of these commands stages an app and launches Basecamp; doctor does not,
-  and refuses them rather than accepting and ignoring them.
+  and refuses them rather than accepting and ignoring them. Its deep check
+  does launch Basecamp, so it takes the budgets that spends: see DOCTOR
+  OPTIONS.
 
   --real-home        Let the app see your real $HOME, and therefore the wallet
                      and settings your Basecamp is already configured with.
@@ -91,7 +93,28 @@ APP OPTIONS — smoke, run, inspect, init
   --logs-dir <path>  With --attach: where that instance writes its logs.
   --env <K=V>        Set an env var for the app. Repeatable. Rarely needed —
                      the throwaway HOME already isolates app state.
-  --timeout <ms>     Startup timeout. Default: 120000.
+  --timeout <dur>    How long Basecamp may take to start. Default: 120s (30s
+                     with --attach). Also how long opening the app may take,
+                     when nothing more specific says. Every duration takes
+                     milliseconds or 500ms, 30s, 2m, 1h, and "none" means no
+                     deadline at all. None of them has a maximum.
+  --open-timeout <dur>
+                     How long opening the app may take, honoured exactly.
+                     Default: 120s. A spec's open_timeout:, or timeout: on
+                     the open: step itself, wins.
+  --step-timeout <dur>
+                     A spec step's budget when neither the step nor its spec
+                     sets timeout:. Default: 30s, or the bridge's reply window
+                     plus 10s when that is longer.
+  --command-timeout <dur>
+                     The longest one inspector command (a click, a state
+                     check, a snapshot) may block before the app is called
+                     hung. Default: the step's timeout, never less than the
+                     bridge's reply window plus 10s. A long one delays
+                     noticing a hung app by just as long.
+  --call-timeout <dur>
+                     The Logos bridge's reply window, when the log does not
+                     show it. Default: read from the log, else 20s.
   --setup <file>     Spec to run before the real work, to get the app past a
                      login or onboarding gate. Auto-discovered from
                      .sitometres/<app>.setup.yaml in the app's own repo, or a
@@ -99,7 +122,7 @@ APP OPTIONS — smoke, run, inspect, init
 
 SMOKE OPTIONS
   --limit <n>        Controls to click. Default: 12.
-  --settle <ms>      Time to observe after each click. Default: 2500.
+  --settle <dur>     Time to observe after each click. Default: 2.5s.
   --skip <a,b>       Labels to leave alone.
   --ignore-calls <a,b>
                      Backend calls to disregard when grading a click, e.g. your
@@ -124,6 +147,9 @@ RUN OPTIONS
                      failures, with inspection commands. Needs a terminal.
   --breakpoint <n>   Pause before step N. Requires --debug. Marking steps with
                      comment: "# breakpoint" in the spec does the same thing.
+  --settle <dur>     How long a step watches before accepting that something
+                     did NOT happen (no_calls:, no_errors:, not_text:).
+                     Default: 1s. A spec's or step's settle: wins.
 
 INSPECT / INIT OPTIONS
   --hidden           Include controls that are not currently visible.
@@ -134,6 +160,14 @@ INSPECT / INIT OPTIONS
 
 DOCTOR OPTIONS
   --deep             Launch Basecamp to measure what the logs will show.
+  --timeout <dur>    How long Basecamp may take to start. Default: 120s.
+                     Requires --deep.
+  --command-timeout <dur>
+                     The longest one inspector command may block while
+                     waiting for the shell. Requires --deep.
+  --call-timeout <dur>
+                     The Logos bridge's reply window, which the command
+                     deadline is derived from. Requires --deep.
   --set-basecamp <p> Remember this Basecamp binary for every future run.
                      Stored in ~/.config/sitometres/config.json.
 
@@ -207,6 +241,12 @@ const BOOT_FLAGS: Record<string, Arity> = {
   env: "value",
   variant: "value",
   timeout: "value",
+  // Time budgets. Values are durations, checked when the command runs, not
+  // here: see durationFlag.
+  "step-timeout": "value",
+  "command-timeout": "value",
+  "call-timeout": "value",
+  "open-timeout": "value",
   // Every verb that opens an app can be blocked by the app's login screen, so
   // every one of them takes a profile. These used to be smoke's alone, which
   // meant a written spec had to duplicate the gate walkthrough and `init` could
@@ -242,12 +282,21 @@ const VERB_FLAGS: Record<string, Record<string, Arity>> = {
     strict: "boolean",
     debug: "boolean",
     breakpoint: "value",
+    settle: "value",
   },
   inspect: { ...BOOT_FLAGS, json: "boolean", hidden: "boolean" },
   init: { ...BOOT_FLAGS, force: "boolean", out: "value" },
   // doctor reads only these. It boots an app solely for --deep, using the app
-  // and basecamp it was given; nothing else would change what it reports.
-  doctor: { deep: "boolean", "set-basecamp": "value" },
+  // and basecamp it was given; nothing else would change what it reports. The
+  // three budgets are the ones that boot spends, and are refused without
+  // --deep (see checkCombinations), because then nothing boots.
+  doctor: {
+    deep: "boolean",
+    "set-basecamp": "value",
+    timeout: "value",
+    "command-timeout": "value",
+    "call-timeout": "value",
+  },
 };
 
 export const KNOWN_VERBS = ["smoke", "run", "inspect", "init", "doctor"] as const;
@@ -378,6 +427,18 @@ export function checkCombinations(verb: string, flags: Map<string, string | true
       "Pausing happens in debug mode. Try `sitometres run <spec> --debug --breakpoint <n>`.",
     );
   }
+  // `doctor --deep` launches Basecamp, so it can be given the time that takes.
+  // Plain `doctor` launches nothing, and a budget there would do nothing.
+  if (verb === "doctor" && !flags.has("deep")) {
+    for (const name of ["timeout", "command-timeout", "call-timeout"]) {
+      if (flags.has(name)) {
+        throw new ArgError(
+          `--${name} needs --deep for \`doctor\``,
+          "Only `doctor --deep` launches Basecamp, so only it has a startup to time.",
+        );
+      }
+    }
+  }
   if (flags.has("setup") && flags.has("no-setup")) {
     throw new ArgError(
       "--setup and --no-setup contradict each other",
@@ -467,6 +528,29 @@ function num(v: string | true | undefined): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * A duration flag's value in milliseconds, or undefined when the flag was not
+ * given.
+ *
+ * Refused outright when it cannot be read. `--timeout` used to go through
+ * Number(), so `--timeout 30s` was silently dropped and the run waited the
+ * default: a flag that did nothing, with nothing said. `finite` refuses
+ * "none" where a wait has to end.
+ */
+export function durationFlag(name: string, v: string | true | undefined, finite = false): number | undefined {
+  if (typeof v !== "string") return undefined;
+  let ms: number;
+  try {
+    ms = parseDuration(v, NaN);
+  } catch (err) {
+    throw new ArgError(`--${name} ${JSON.stringify(v)}: ${(err as Error).message}`, `Use ${DURATION_FORMS}.`);
+  }
+  if (finite && !Number.isFinite(ms)) {
+    throw new ArgError(`--${name} has to end, so it cannot be ${JSON.stringify(v)}`, "Give it a duration, e.g. 5s.");
+  }
+  return ms;
+}
+
 function list(v: string | true | undefined): string[] | undefined {
   return typeof v === "string" ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
 }
@@ -551,8 +635,16 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Command
   if (flags.has("keep-staged")) common.keepStaged = true;
   const port = num(flags.get("port"));
   if (port !== undefined) common.port = port;
-  const timeout = num(flags.get("timeout"));
-  if (timeout !== undefined) common.timeoutMs = timeout;
+  for (const [flag, key] of [
+    ["timeout", "timeoutMs"],
+    ["step-timeout", "stepTimeoutMs"],
+    ["command-timeout", "commandTimeoutMs"],
+    ["call-timeout", "callTimeoutMs"],
+    ["open-timeout", "openTimeoutMs"],
+  ] as const) {
+    const ms = durationFlag(flag, flags.get(flag));
+    if (ms !== undefined) common[key] = ms;
+  }
   const variant = str(flags.get("variant"));
   if (variant) common.variant = variant;
   const env = envOverlay(repeated.get("env"));
@@ -582,13 +674,17 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Command
         ...(basecamp ? { basecamp } : {}),
         ...(str(flags.get("set-basecamp")) ? { setBasecamp: str(flags.get("set-basecamp"))! } : {}),
         deep: flags.has("deep"),
+        ...(common.timeoutMs !== undefined ? { timeoutMs: common.timeoutMs as number } : {}),
+        ...(common.commandTimeoutMs !== undefined ? { commandTimeoutMs: common.commandTimeoutMs as number } : {}),
+        ...(common.callTimeoutMs !== undefined ? { callTimeoutMs: common.callTimeoutMs as number } : {}),
       }, deps);
 
     case "smoke": {
       const o: Record<string, unknown> = { ...common };
       const limit = num(flags.get("limit"));
       if (limit !== undefined) o.limit = limit;
-      const settle = num(flags.get("settle"));
+      // A crawl sleeps this long after every click, so it has to end.
+      const settle = durationFlag("settle", flags.get("settle"), true);
       if (settle !== undefined) o.settleMs = settle;
       const skip = list(flags.get("skip"));
       const ignoreCalls = list(flags.get("ignore-calls"));
@@ -638,6 +734,8 @@ export async function main(argv: string[] = process.argv.slice(2), deps: Command
       if (flags.has("strict")) o.strict = true;
       const breakpoint = num(flags.get("breakpoint"));
       if (breakpoint !== undefined) o.breakpoint = breakpoint;
+      const settle = durationFlag("settle", flags.get("settle"));
+      if (settle !== undefined) o.settleMs = settle;
       return run(o as unknown as Parameters<typeof run>[0], deps);
     }
 

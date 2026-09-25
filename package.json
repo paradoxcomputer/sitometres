@@ -1,6 +1,6 @@
 {
   "name": "@paradoxcomputer/sitometres",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "UI test runner for Logos Basecamp apps: drives real clicks through the QML inspector and proves from the logs that the expected backend calls fired and succeeded.",
   "author": "Paradox Computer",
   "publishConfig": {
@@ -24,6 +24,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE-MIT",
     "LICENSE-APACHE-v2",
     "profiles",

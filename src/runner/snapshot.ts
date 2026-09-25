@@ -140,6 +140,14 @@ export class UiSnapshot {
   clickTargetFor(n: UiNode): { target: UiNode; via: ClickVia } {
     if (isClickableType(n.type)) return { target: n, via: "self" };
 
+    // A hand-rolled button selected by objectName IS the container: its handler is inside it
+    // (Rectangle { objectName: "…"; Text; MouseArea }). Climbing first went to the PARENT
+    // container and took the first handler there, which is a neighbour's: on medusa_ui's backup
+    // step that clicked the recovery-phrase box above "I've saved it" instead of the button.
+    // A label has no descendants, so this changes nothing for text selectors.
+    const own = this.descendants(n).find((d) => isHandlerType(d.type) && d.visible && d.enabled);
+    if (own) return { target: own, via: "hitArea" };
+
     const chain: UiNode[] = [];
     for (const a of this.ancestors(n)) {
       if (isClickableType(a.type)) return { target: a, via: "ancestor" };

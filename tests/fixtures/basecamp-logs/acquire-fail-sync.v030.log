@@ -1,0 +1,11 @@
+RemoteTransportConnection: Connecting to registry: "local:logos_no_such_module_xyz_0a28b3208f0c" at "23:08:30.906"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_no_such_module_xyz_0a28b3208f0c"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_0a28b3208f0c" at "23:08:30.906"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_capability_module_0a28b3208f0c"
+LogosAPIClient: invoking remote method "no_such_module_xyz" "x" args_count: 0
+LogosAPIClient: getToken for module: "no_such_module_xyz"
+LogosAPIClient: No token found for module: "no_such_module_xyz"
+RemoteTransportConnection: no listener at "local:logos_no_such_module_xyz_0a28b3208f0c" -- request for "no_such_module_xyz" will block up to 1500 ms and then fail. Is the module loaded?
+RemoteTransportConnection: Requesting object: "no_such_module_xyz" at "23:08:30.907"
+RemoteTransportConnection: Timeout waiting for replica: "no_such_module_xyz"
+qml: PROBE sync-missing-module ms=1427 -> {"error":"Module not reachable yet","message":"still not reachable after 1500 ms; if this call happens at startup use logos.callModuleAsync(), which waits for the module instead of giving up","method":"x","module":"no_such_module_xyz"}

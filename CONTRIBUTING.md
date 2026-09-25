@@ -96,6 +96,11 @@ Subject in the imperative, lowercase, describing the behaviour change rather
 than the edit. The body explains what was wrong and why the fix is the right
 one. Do not add Co-Authored-By trailers.
 
+`CHANGELOG.md` is written out of those bodies. If a change alters what a user
+can do, or fixes something they hit, add it under `## [Unreleased]` in the same
+commit - what was wrong, not which files moved. Refactors and test-only changes
+get no entry: a change nobody can act on is not worth recording.
+
 ## Planning
 
 Changes are tracked with [OpenSpec](https://openspec.dev): `openspec/` holds the

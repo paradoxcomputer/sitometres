@@ -329,7 +329,10 @@ test("the state command sends an expression, not an object id", async () => {
     return { result: '{"phase":"idle"}', undefined: false };
   };
   const r = runnerWith(d, STEPS);
-  r.qmlRootId = "qml-root-1";
+  // The runner keeps one scope per opened app; this is what an `open:` of
+  // app "a" leaves behind.
+  r.scopes.set("a", { dockId: "dock-1", scopeId: "qml-root-1", qmlRootId: "qml-root-1" });
+  r.current = "a";
 
   const out = await r.debugCallbacks().getState();
   assert.equal(sent.length, 1);

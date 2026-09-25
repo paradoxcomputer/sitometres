@@ -1,0 +1,4 @@
+[2026-09-24 23:07:44.237] [debug] [logos] [modules_state] Debug: ModuleProxy: callRemoteMethod "note_transition" args: 7
+[2026-09-24 23:07:44.238] [debug] [logos] [modules_state] Debug: [LogosProviderObject] ModuleProxy: forwarding event "module_state_changed" as Qt signal
+[2026-09-24 23:07:44.238] [debug] [logos] [modules_state] Debug: ModuleProxy: callRemoteMethod "note_transition" args: 7
+[2026-09-24 23:07:44.238] [debug] [logos] [modules_state] Debug: [LogosProviderObject] ModuleProxy: forwarding event "module_state_changed" as Qt signal

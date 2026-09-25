@@ -201,7 +201,8 @@ test("a command refuses flags it would silently ignore", () => {
   for (const line of [
     "doctor --headed",
     "doctor --real-home",
-    "doctor --timeout 5000",
+    "doctor --step-timeout 5000",
+    "doctor --open-timeout 5000",
     "inspect medusa_ui --debug",
     "inspect medusa_ui --strict",
     "init medusa_ui --breakpoint 3",
@@ -210,6 +211,19 @@ test("a command refuses flags it would silently ignore", () => {
       () => parse(line),
       (e) => e instanceof ArgError && /does not mean anything for/.test(e.message),
       `${line} should be refused`,
+    );
+  }
+});
+
+test("doctor takes a startup budget only when --deep gives it a startup to time", () => {
+  // `doctor --deep` launches Basecamp, and refused --timeout: a Basecamp that
+  // needed more than the default 120 s to reach its shell could never pass it.
+  for (const flag of ["--timeout 5m", "--command-timeout none", "--call-timeout 90s"]) {
+    assert.doesNotThrow(() => parse(`doctor --deep ${flag}`), `doctor --deep ${flag}`);
+    assert.throws(
+      () => parse(`doctor ${flag}`),
+      (e) => e instanceof ArgError && /needs --deep/.test(e.message),
+      `doctor ${flag} launches nothing, so the budget would do nothing`,
     );
   }
 });

@@ -1,0 +1,3 @@
+ui-host [ "zonescan_lite" ]: "ui-host: loaded plugin \"zonescan_lite\" from \"/tmp/sito-userdir/plugins/zonescan_lite/zonescan_lite_plugin.so\""
+ui-host [ "zonescan_lite" ]: "ui-host: called initLogos on plugin \"zonescan_lite\""
+ui-host [ "zonescan_lite" ]: "ui-host: remoting enabled for \"zonescan_lite\""

@@ -1,0 +1,26 @@
+RemoteTransportConnection: Connecting to registry: "local:logos_package_manager_cc92d1dcf961" at "22:58:45.359"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_package_manager_cc92d1dcf961"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_cc92d1dcf961" at "22:58:45.359"
+RemoteTransportConnection: Registry connect attempt started (no peer contact yet): "local:logos_capability_module_cc92d1dcf961"
+LogosAPIClient: invoking remote method "package_manager" "getInstalledPackages" args_count: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: No token found for module: "package_manager"
+RemoteTransportConnection: Requesting object: "package_manager" at "22:58:45.359"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_manager"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 166674784
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: No token found for module: "package_manager"
+LogosAPIClient: calling requestModule for "package_manager"
+LogosAPIClient: getToken for module: "capability_module"
+LogosAPIClient: Found token for module: "capability_module"
+LogosAPIConsumer: requestModule for origin: "package_manager_ui" target: "package_manager" budget: 19997 ms
+RemoteTransportConnection: Requesting object: "capability_module" at "22:58:45.363"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 166790944
+[LogosObject] RemoteLogosObject::callMethod "requestModule" args: 2
+[2026-09-24 22:58:45.364] [warning] [logos] [capability_module] Warning: QObject::connect: No such signal ::eventResponse(QString,QVariantList)
+[LogosObject] Destroying RemoteLogosObject 0
+LogosAPIClient: requestModule result for "package_manager" : "00000000-0000-4000-8000-000000000000"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "getInstalledPackages" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "getInstalledPackages"
+[LogosObject] RemoteLogosObject::callMethod "getInstalledPackages" args: 0

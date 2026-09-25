@@ -1,0 +1,22 @@
+RemoteTransportConnection: Connecting to registry: "local:logos_no_such_module_xyz_b0267aeac320" at "23:01:55.568"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_no_such_module_xyz_b0267aeac320"
+RemoteTransportConnection: Connected to registry at "23:01:55.568"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_b0267aeac320" at "23:01:55.568"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_b0267aeac320"
+RemoteTransportConnection: Connected to registry at "23:01:55.568"
+LogosAPIClient: getToken for module: "no_such_module_xyz"
+LogosAPIClient: No token found for module: "no_such_module_xyz"
+LogosAPIClient: getToken for module: "capability_module"
+LogosAPIClient: Found token for module: "capability_module"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:01:55.568"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 372636384
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "requestModule"
+[LogosObject] RemoteLogosObject::callMethodAsync "requestModule" args: 2
+[2026-09-24 23:01:55.568] [info] [logos] [capability_module] ModuleProxy: callRemoteMethod "requestModule" args: 2
+[2026-09-24 23:01:55.568] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule called with fromModuleName: "core" moduleName: "no_such_module_xyz"
+[2026-09-24 23:01:55.568] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule: rejecting request for unknown target module: "no_such_module_xyz" - no token registered for it
+RemoteTransportConnection: Requesting object: "no_such_module_xyz" at "23:01:55.571"
+qml: PROBE async-missing-module ms=15130 -> {"error":"timeout","method":"x","module":"no_such_module_xyz"}
+RemoteTransportConnection: Timeout waiting for replica: "no_such_module_xyz"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "no_such_module_xyz"

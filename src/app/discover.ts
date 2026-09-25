@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { loadConfig } from "../config.js";
-import { type AppManifest, type LoadedManifest, readManifestDir, uiLabel } from "./manifest.js";
+import { type AppManifest, type LoadedManifest, normaliseManifest, readManifestDir, uiLabel } from "./manifest.js";
 
 export interface DiscoveredApp {
   manifest: AppManifest;
@@ -57,9 +57,42 @@ export interface DiscoveredApp {
    * and a freshly built `result/*.lgx` — and testing yesterday's copy of code
    * you just rebuilt is a silent, expensive mistake. Whichever is newer wins,
    * and the header prints what was chosen and how old it is.
+   *
+   * Stays a number, because it is exported and already published as
+   * `source.builtAt`. A nix store normalises every mtime to the epoch, so read
+   * it through knownBuildTime(), which says "unknown" instead of "1970".
    */
   builtAt: number;
+  /**
+   * Whether this copy lives under a Basecamp user-dir ("installed") or was
+   * found anywhere else ("local"). Decided from the path, once, at discovery.
+   *
+   * A local build beats an installed copy of the same version. Without this the
+   * installed copy won whenever its mtime was newer, and a nix-built
+   * `result/*.lgx` always reports the epoch, so a run tested the install
+   * instead of the build that had just been made.
+   */
+  provenance: Provenance;
 }
+
+/** Where a copy of an app was found. See DiscoveredApp.provenance. */
+export type Provenance = "local" | "installed";
+
+/**
+ * Why a copy lost to another copy of the same app, for the report.
+ *
+ *   incomplete     it is missing what its manifest promises
+ *   source-only    it is a source tree (metadata.json), the other is built
+ *   lower-version  the other copy declares a higher version
+ *   installed      it is installed, the other is a local build of the same version
+ *   older          both build times are known, and the other one is newer
+ *   untimed-tie    everything tied and a build time is unknown, so the copy
+ *                  found first was kept
+ *   out-of-range   the app declares a version range for this dependency
+ *                  (0.3.0's object form), and only the other copy is in it
+ */
+export type PassReason =
+  | "incomplete" | "source-only" | "lower-version" | "installed" | "older" | "untimed-tie" | "out-of-range";
 
 const IGNORED_DIRS = new Set([
   "node_modules", ".git", "build", "dist", "target", ".direnv", "outputs", "testdata",
@@ -89,21 +122,45 @@ const LOADABLE_TYPES = new Set(["ui_qml", "core"]);
 const BASECAMP_BUILTINS = new Set([
   "main_ui", "package_manager_ui", "package_manager", "package_downloader",
   "capability_module", "logos_ios_app",
+  // 0.3.0 embeds a fourth core module.
+  "modules_state",
 ]);
 
 /**
  * Look for apps in and under `root`. Shallow by design — a couple of levels is
  * enough for every real layout, and deep walks over a Nix-heavy repo are slow.
+ *
+ * One copy per name: the best of every copy found, by compareCopies. Use
+ * discoverCopies() for every copy, the ones that lost included.
  */
 export function discoverApps(root: string): DiscoveredApp[] {
   const found = new Map<string, DiscoveredApp>();
+  for (const copy of discoverCopies(root)) {
+    if (better(copy, found.get(copy.manifest.name))) found.set(copy.manifest.name, copy);
+  }
+  // UI plugins first: those are the ones a UI test can actually drive.
+  return [...found.values()].sort((a, b) => Number(b.slot === "plugins") - Number(a.slot === "plugins"));
+}
+
+/**
+ * Every copy of every app in and under `root`, in the order they were found.
+ *
+ * The order is part of the answer: when two copies tie on everything
+ * compareCopies can see, the one found first is kept, so staging stays stable
+ * rather than flipping with the filesystem's listing order.
+ */
+export function discoverCopies(root: string): DiscoveredApp[] {
+  const copies: DiscoveredApp[] = [];
+  const installedRoots = realUserDirs();
+  const add = (copy: Omit<DiscoveredApp, "provenance">): void => {
+    if (BASECAMP_BUILTINS.has(copy.manifest.name)) return;
+    copies.push({ ...copy, provenance: provenanceOf(copy.artifact, installedRoots) });
+  };
 
   const addDir = (dir: string, slot: "plugins" | "modules", origin: string) => {
     const loaded = readManifestDir(dir);
     if (!loaded) return;
-    const key = loaded.manifest.name;
-    if (BASECAMP_BUILTINS.has(loaded.manifest.name)) return;
-    const candidate: DiscoveredApp = {
+    add({
       manifest: loaded.manifest,
       artifact: dir,
       form: "dir",
@@ -113,8 +170,7 @@ export function discoverApps(root: string): DiscoveredApp[] {
       label: uiLabel(loaded.manifest),
       ...withCompleteness(loaded.manifest, dir),
       builtAt: newestMtime(dir),
-    };
-    if (better(candidate, found.get(key))) found.set(key, candidate);
+    });
   };
 
   // 1. Conventional built-output trees, including one level of nesting so a
@@ -134,7 +190,7 @@ export function discoverApps(root: string): DiscoveredApp[] {
   for (const entry of childDirs(root)) {
     const loaded = readManifestDir(entry);
     if (!loaded) continue;
-    addCandidate(found, {
+    add({
       manifest: loaded.manifest,
       artifact: entry,
       form: "dir",
@@ -150,7 +206,7 @@ export function discoverApps(root: string): DiscoveredApp[] {
   // 3. A source manifest sitting at the repo root.
   const rootManifest = readManifestDir(root);
   if (rootManifest) {
-    addCandidate(found, {
+    add({
       manifest: rootManifest.manifest,
       artifact: root,
       form: "dir",
@@ -178,7 +234,7 @@ export function discoverApps(root: string): DiscoveredApp[] {
       const file = path.join(dir, name);
       const manifest = readLgxManifest(file);
       if (!manifest) continue;
-      addCandidate(found, {
+      add({
         manifest,
         artifact: file,
         form: "lgx",
@@ -192,8 +248,103 @@ export function discoverApps(root: string): DiscoveredApp[] {
     }
   }
 
-  // UI plugins first: those are the ones a UI test can actually drive.
-  return [...found.values()].sort((a, b) => Number(b.slot === "plugins") - Number(a.slot === "plugins"));
+  // A nix out-link dates what it points at. Every file in the store reads the
+  // epoch, so a fresh `nix build` and one from last year look the same from
+  // inside. The `result` link itself is written when the build finishes, so
+  // its own mtime is when those bytes were produced, and it is used wherever
+  // the copy's own time is unknown.
+  const links = outLinks(root);
+  for (const copy of copies) {
+    if (knownBuildTime(copy) !== null) continue;
+    const link = links.find((l) => copy.artifact === l.path || copy.artifact.startsWith(l.path + path.sep));
+    if (link) copy.builtAt = link.mtimeMs;
+  }
+  return copies;
+}
+
+/** `result*` symlinks directly under `root`, with the time each was written. */
+function outLinks(root: string): Array<{ path: string; mtimeMs: number }> {
+  const out: Array<{ path: string; mtimeMs: number }> = [];
+  for (const name of safeReaddir(root)) {
+    if (!/^result/.test(name)) continue;
+    const p = path.join(root, name);
+    try {
+      const st = fs.lstatSync(p);
+      if (st.isSymbolicLink() && isKnownTime(st.mtimeMs)) out.push({ path: p, mtimeMs: st.mtimeMs });
+    } catch {
+      /* a link we cannot stat dates nothing */
+    }
+  }
+  return out;
+}
+
+/**
+ * Every place a Basecamp install could be, on this platform.
+ *
+ * One implementation, because there were three and they disagreed: only this
+ * one knew the macOS locations, so dependency staging and `doctor` were
+ * Linux-only. A macOS author got a hard error reading "Looked in this repo,
+ * its parent, and your Basecamp install", which was false because it had not,
+ * and a doctor that said an installed dependency was not there.
+ *
+ * $LOGOS_USER_DIR wins when set; it is Basecamp's own override.
+ *
+ * The platform and home are parameters so both branches can be asserted from
+ * either host. Reading `process.platform` directly, the darwin branch was
+ * executed by nothing at all: CI runs ubuntu only, and the one test covering
+ * it asserted the Linux list when it was not on a Mac, so it would have passed
+ * with the darwin code deleted, while an archived task recorded the coverage
+ * as done.
+ *
+ * Lives here rather than in session.ts because discovery needs it to tell an
+ * installed copy from a local one, and session.ts already imports this file.
+ */
+export function basecampUserDirs(
+  platform: string = process.platform,
+  home: string = process.env.HOME ?? os.homedir(),
+): string[] {
+  const perPlatform =
+    platform === "darwin"
+      ? ["Library/Application Support/Logos/LogosBasecampDev", "Library/Application Support/Logos/LogosBasecamp"]
+      : [".local/share/Logos/LogosBasecampDev", ".local/share/Logos/LogosBasecamp"];
+  return [
+    process.env.LOGOS_USER_DIR,
+    ...perPlatform.map((rel) => path.join(home, rel)),
+    // Kept for a developer who moved between platforms, or a shared checkout.
+    ...(platform === "darwin"
+      ? [".local/share/Logos/LogosBasecampDev", ".local/share/Logos/LogosBasecamp"].map((r) => path.join(home, r))
+      : []),
+  ].filter((d): d is string => Boolean(d));
+}
+
+/** The user-dirs that exist, resolved, for comparing against a copy's real path. */
+function realUserDirs(): string[] {
+  const out: string[] = [];
+  for (const d of basecampUserDirs()) {
+    try {
+      out.push(fs.realpathSync(d));
+    } catch {
+      /* not on this machine */
+    }
+  }
+  return out;
+}
+
+/**
+ * "installed" when the copy's real path lies under a Basecamp user-dir.
+ *
+ * Decided from the path and not from which search found it: running from
+ * inside an install makes "found where you pointed" and "installed" the same
+ * directory, and a label that depended on the caller would say both.
+ */
+function provenanceOf(artifact: string, installedRoots: string[]): Provenance {
+  let real: string;
+  try {
+    real = fs.realpathSync(artifact);
+  } catch {
+    real = path.resolve(artifact);
+  }
+  return installedRoots.some((r) => real === r || real.startsWith(r + path.sep)) ? "installed" : "local";
 }
 
 /**
@@ -321,14 +472,77 @@ function newestMtime(target: string, budget = 400): number {
 }
 
 /**
- * Which of two copies of the same app to keep.
+ * A build time, or null when it cannot be known.
  *
- * Order matters, and mtime is the weakest of the three signals:
+ * Zero means it was never read, and anything inside the first day after the
+ * epoch is how a nix store normalises mtimes: "1970" is a property of the
+ * store, not of the build. Every comparison and every formatter goes through
+ * this, so an unknown time can never lose to a known one or be printed as an
+ * age.
+ */
+export function knownBuildTime(app: Pick<DiscoveredApp, "builtAt">): number | null {
+  return isKnownTime(app.builtAt) ? app.builtAt : null;
+}
+
+/** True for an epoch-ms time that means something. See knownBuildTime. */
+export function isKnownTime(ms: number | null | undefined): ms is number {
+  return typeof ms === "number" && Number.isFinite(ms) && ms >= 86_400_000;
+}
+
+/**
+ * Which of two copies of the same app to keep, and why the other one lost.
+ *
+ * One ordered comparison, used by discovery, by the dependency sweep and by
+ * the widening to the Basecamp install alike. There were three, each with its
+ * own idea of the order, and none knew which copies were installed.
  *
  *   1. a loadable build beats one missing its outputs
- *   2. a HIGHER VERSION beats a lower one
- *   3. only then, newer mtime
+ *   2. a build (manifest.json) beats the source tree it came from
+ *   3. a HIGHER VERSION beats a lower one, wherever each was found
+ *   4. a local build beats an installed copy of the same version
+ *   5. a newer build time wins, only when both times are known
+ *   6. otherwise the incumbent, the copy found first, stays
  *
+ * `reason` is why the loser lost, whichever side that was: the candidate when
+ * `wins` is false, the incumbent when it is true.
+ *
+ * Rule 4 is the one that was missing. An installed copy used to beat a fresh
+ * local build of the same version whenever its mtime was newer, and a nix
+ * `result/*.lgx` always reads the epoch, so a run staged the install and its
+ * verdict was about bytes nobody had just built.
+ */
+export function compareCopies(
+  candidate: DiscoveredApp,
+  incumbent: DiscoveredApp | undefined,
+): { wins: boolean; reason: PassReason | null } {
+  if (!incumbent) return { wins: true, reason: null };
+  if (Boolean(incumbent.incomplete) !== Boolean(candidate.incomplete)) {
+    return { wins: !candidate.incomplete, reason: "incomplete" };
+  }
+  // A build beats the repo it came from, whatever the clock says. Nix
+  // normalises every store timestamp to the epoch, so a freshly built
+  // `result/*.lgx` reports 1970 while the source beside it reports today, and a
+  // recency tiebreak chose the SOURCE every time. Staging a source checkout
+  // produces a directory with `metadata.json` and no `manifest.json`, which
+  // Basecamp silently declines to list. Observed on a nix-built ldex_ui.
+  if (Boolean(candidate.built) !== Boolean(incumbent.built)) {
+    return { wins: Boolean(candidate.built), reason: "source-only" };
+  }
+  const byVersion = compareVersions(candidate.manifest.version, incumbent.manifest.version);
+  if (byVersion !== 0) return { wins: byVersion > 0, reason: "lower-version" };
+  const mine = candidate.provenance ?? "local";
+  const theirs = incumbent.provenance ?? "local";
+  if (mine !== theirs) return { wins: mine === "local", reason: "installed" };
+  const a = knownBuildTime(candidate);
+  const b = knownBuildTime(incumbent);
+  if (a !== null && b !== null) return { wins: a > b, reason: "older" };
+  return { wins: false, reason: "untimed-tie" };
+}
+
+/**
+ * Which of two copies of the same app to keep.
+ *
+ * Kept for its callers and its export: it is compareCopies without the reason.
  * Version comes before mtime because a timestamp lies in both directions here:
  * nix normalises store mtimes to the epoch, and a stale package sitting in
  * dist/ carries whatever date it was copied. A real case: medusa/dist held a
@@ -337,20 +551,125 @@ function newestMtime(target: string, budget = 400): number {
  * belonged to sitometres rather than to the app.
  */
 export function better(candidate: DiscoveredApp, incumbent: DiscoveredApp | undefined): boolean {
-  if (!incumbent) return true;
-  if (Boolean(incumbent.incomplete) !== Boolean(candidate.incomplete)) return !candidate.incomplete;
-  // A build beats the repo it came from, whatever the clock says. Nix
-  // normalises every store timestamp to the epoch, so a freshly built
-  // `result/*.lgx` reports 1970 while the source beside it reports today — and
-  // the recency tiebreak below therefore chose the SOURCE every time. Staging a
-  // source checkout produces a directory with `metadata.json` and no
-  // `manifest.json`, which Basecamp silently declines to list: the run then
-  // fails with "sidebar has not rendered <app>", which reads like the app's
-  // fault and is not. Observed on a nix-built ldex_ui.
-  if (candidate.built !== incumbent.built) return candidate.built;
-  const byVersion = compareVersions(candidate.manifest.version, incumbent.manifest.version);
-  if (byVersion !== 0) return byVersion > 0;
-  return candidate.builtAt > incumbent.builtAt;
+  return compareCopies(candidate, incumbent).wins;
+}
+
+/** Library suffixes a bare `main` may be completed with, per platform. */
+const LIB_EXTS = [".so", ".dylib", ".dll", ""];
+
+/**
+ * The file Basecamp loads from a copy of this app, for the staging hash.
+ *
+ * `has(rel)` answers whether a path relative to the app's root exists in the
+ * copy being hashed (a directory, or a variant's payload inside a `.lgx`), so
+ * the one rule serves the staged copy and the prediction of it alike.
+ *
+ *   main: "x"           the library, completed with the platform's suffix
+ *   main: {variant: x}  the chosen variant's library; when no key matches,
+ *                       every distinct library in the map that exists
+ *   main: {} or none    a pure-QML plugin has no library, so its `view`
+ */
+export function mainEntryOf(
+  manifest: AppManifest,
+  variant: string,
+  has: (rel: string) => boolean,
+): Array<{ kind: "library" | "view"; rel: string }> {
+  const main = manifest.main;
+  if (typeof main === "string" && main.length > 0) {
+    for (const ext of LIB_EXTS) if (has(main + ext)) return [{ kind: "library", rel: main + ext }];
+    return [];
+  }
+  if (main && typeof main === "object" && Object.keys(main).length > 0) {
+    const chosen = main[variant];
+    if (typeof chosen === "string" && chosen.length > 0 && has(chosen)) return [{ kind: "library", rel: chosen }];
+    const libs = [...new Set(Object.values(main).filter((l): l is string => typeof l === "string" && l.length > 0))];
+    return libs.filter(has).map((rel) => ({ kind: "library" as const, rel }));
+  }
+  if (manifest.type === "ui_qml" && typeof manifest.view === "string" && manifest.view.length > 0 && has(manifest.view)) {
+    return [{ kind: "view", rel: manifest.view }];
+  }
+  return [];
+}
+
+/**
+ * Does `version` fall in `range`? Null when either cannot be read.
+ *
+ * The npm-style forms a manifest's object dependency uses: an exact version,
+ * `^` and `~`, comparators (`>=1.2 <2`), `x` wildcards, and `||` between
+ * alternatives. Pre-release tags are ignored: a range here chooses between
+ * copies on disk, it does not resolve a registry.
+ */
+export function satisfiesRange(version: string | undefined, range: string): boolean | null {
+  const v = parseSemver(version);
+  if (!v) return null;
+  const alternatives = range.split("||").map((r) => r.trim());
+  let readable = false;
+  for (const alt of alternatives) {
+    const comparators = alt.length === 0 ? ["*"] : alt.split(/\s+/);
+    let all = true;
+    let ok = true;
+    for (const c of comparators) {
+      const r = comparatorHolds(v, c);
+      if (r === null) {
+        ok = false;
+        break;
+      }
+      if (!r) all = false;
+    }
+    if (!ok) continue;
+    readable = true;
+    if (all) return true;
+  }
+  return readable ? false : null;
+}
+
+type Semver = [number, number, number];
+
+function parseSemver(v: string | undefined): Semver | null {
+  if (!v) return null;
+  const m = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(v.trim());
+  return m ? [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)] : null;
+}
+
+function cmp(a: Semver, b: Semver): number {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! > b[i]! ? 1 : -1;
+  return 0;
+}
+
+function comparatorHolds(v: Semver, raw: string): boolean | null {
+  if (raw === "*" || raw === "x" || raw === "X") return true;
+  const m = /^(\^|~|>=|<=|>|<|=)?v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?(?:[-+].*)?$/.exec(raw);
+  if (!m) return null;
+  const op = m[1] ?? "";
+  const wild = (p: string | undefined) => p === undefined || /^[xX*]$/.test(p);
+  const parts = [m[2], m[3], m[4]];
+  const fixed = parts.findIndex(wild);
+  const known = fixed === -1 ? 3 : fixed;
+  const base: Semver = [0, 1, 2].map((i) => (i < known ? Number(parts[i]) : 0)) as Semver;
+  if (known === 0) return true;
+  // A partial version is the range of everything it names: 1.2 is >=1.2.0 <1.3.0.
+  const upperOf = (k: number): Semver =>
+    k === 1 ? [base[0] + 1, 0, 0] : k === 2 ? [base[0], base[1] + 1, 0] : [base[0], base[1], base[2] + 1];
+  switch (op) {
+    case "":
+    case "=":
+      return cmp(v, base) >= 0 && cmp(v, upperOf(known)) < 0;
+    case "^": {
+      const upper: Semver = base[0] > 0 || known === 1 ? [base[0] + 1, 0, 0] : base[1] > 0 || known === 2 ? [0, base[1] + 1, 0] : [0, 0, base[2] + 1];
+      return cmp(v, base) >= 0 && cmp(v, upper) < 0;
+    }
+    case "~":
+      return cmp(v, base) >= 0 && cmp(v, known === 1 ? [base[0] + 1, 0, 0] : [base[0], base[1] + 1, 0]) < 0;
+    case ">=":
+      return cmp(v, base) >= 0;
+    case ">":
+      return known === 3 ? cmp(v, base) > 0 : cmp(v, upperOf(known)) >= 0;
+    case "<=":
+      return known === 3 ? cmp(v, base) <= 0 : cmp(v, upperOf(known)) < 0;
+    case "<":
+      return cmp(v, base) < 0;
+  }
+  return null;
 }
 
 /** Dotted-numeric compare; 0 when either side has no usable version. */
@@ -367,11 +686,6 @@ export function compareVersions(a: string | undefined, b: string | undefined): n
   return 0;
 }
 
-function addCandidate(found: Map<string, DiscoveredApp>, candidate: DiscoveredApp): void {
-  if (BASECAMP_BUILTINS.has(candidate.manifest.name)) return;
-  if (better(candidate, found.get(candidate.manifest.name))) found.set(candidate.manifest.name, candidate);
-}
-
 function slotFor(m: AppManifest): "plugins" | "modules" {
   return m.type === "core" ? "modules" : "plugins";
 }
@@ -382,16 +696,13 @@ export function readLgxManifest(file: string): AppManifest | null {
   const first = entries[0];
   if (!first) return null;
   try {
+    // Through the same normaliser as a manifest read off disk. This was a
+    // second, hand-rolled copy of it, and it drifted the way a copy does: when
+    // normaliseManifest learned to drop a field whose type its declaration does
+    // not honour, a .lgx still handed `"version": 2` straight through, and
+    // compareVersions still died on it with `a.split is not a function`.
     const raw = JSON.parse(first.data.toString("utf8")) as Record<string, unknown>;
-    if (typeof raw.name !== "string") return null;
-    return {
-      ...raw,
-      name: raw.name,
-      type: typeof raw.type === "string" ? raw.type : "unknown",
-      dependencies: Array.isArray(raw.dependencies)
-        ? raw.dependencies.filter((d): d is string => typeof d === "string")
-        : [],
-    } as AppManifest;
+    return normaliseManifest(raw, file);
   } catch {
     return null;
   }

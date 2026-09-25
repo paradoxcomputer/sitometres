@@ -35,11 +35,26 @@ import {
   type ScreenshotResult,
   type SendKeysResult,
 } from "./protocol.js";
+import { COMMAND_MARGIN_MS, DEFAULT_CALL_WINDOW_MS, MAX_TIMER_MS, describeBudget, timerFor } from "../timeouts.js";
 
 export interface InspectorClientOptions {
   host?: string;
   port?: number;
-  /** Per-command deadline. getTree on a deep tree is the slow one. */
+  /**
+   * Per-command deadline, until a caller scopes a different one with
+   * withCommandTimeout. Infinity, or anything Node cannot time, means none.
+   *
+   * Defaults to the bridge's reply window plus a margin (30 s on stock
+   * Basecamp). A synchronous `logos.callModule` holds the GUI thread, which is
+   * the thread that answers the inspector, until the bridge gives up, so a
+   * deadline at or below that window reports a slow backend call as a hung app.
+   */
+  timeoutMs?: number;
+}
+
+/** Options for one command. */
+export interface CommandOptions {
+  /** This command's deadline, overriding the current one. */
   timeoutMs?: number;
 }
 
@@ -52,7 +67,7 @@ export interface TimedResponse<T> {
 interface Pending {
   resolve: (value: InspectorRawResponse) => void;
   reject: (reason: Error) => void;
-  timer: NodeJS.Timeout;
+  timer: NodeJS.Timeout | null;
   command: InspectorCommand;
 }
 
@@ -62,7 +77,8 @@ export const DEFAULT_INSPECTOR_PORT = 3768;
 export class InspectorClient {
   readonly host: string;
   readonly port: number;
-  private readonly timeoutMs: number;
+  /** The deadline a command gets when its caller names none. */
+  private currentTimeoutMs: number;
 
   private socket: net.Socket | null = null;
   private buffer = "";
@@ -77,7 +93,40 @@ export class InspectorClient {
   constructor(opts: InspectorClientOptions = {}) {
     this.host = opts.host ?? process.env.QML_INSPECTOR_HOST ?? DEFAULT_INSPECTOR_HOST;
     this.port = opts.port ?? Number(process.env.QML_INSPECTOR_PORT ?? DEFAULT_INSPECTOR_PORT);
-    this.timeoutMs = opts.timeoutMs ?? 20_000;
+    this.currentTimeoutMs = opts.timeoutMs ?? DEFAULT_CALL_WINDOW_MS + COMMAND_MARGIN_MS;
+  }
+
+  // --- deadlines -----------------------------------------------------------
+
+  /**
+   * The deadline every command gets unless it names its own.
+   *
+   * Settable, because a crawl re-derives it from the bridge window it has
+   * learned so far. Inside withCommandTimeout this is the scoped value.
+   */
+  get commandTimeoutMs(): number {
+    return this.currentTimeoutMs;
+  }
+
+  set commandTimeoutMs(ms: number) {
+    this.currentTimeoutMs = ms;
+  }
+
+  /**
+   * Run `fn` with every command it issues bounded by `ms`, then put the
+   * previous deadline back, whether `fn` returned or threw.
+   *
+   * Nests: a setup profile runs its own runner on this same client from inside
+   * the outer run's `open:` step, and each level restores what it replaced.
+   */
+  async withCommandTimeout<T>(ms: number, fn: () => Promise<T>): Promise<T> {
+    const previous = this.currentTimeoutMs;
+    this.currentTimeoutMs = ms;
+    try {
+      return await fn();
+    } finally {
+      this.currentTimeoutMs = previous;
+    }
   }
 
   // --- connection ----------------------------------------------------------
@@ -153,7 +202,7 @@ export class InspectorClient {
     this.fatal = err;
     this.socket = null;
     for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
+      if (p.timer) clearTimeout(p.timer);
       p.reject(err);
     }
     this.pending.clear();
@@ -176,7 +225,7 @@ export class InspectorClient {
       }
       const p = typeof msg.id === "number" ? this.pending.get(msg.id) : undefined;
       if (!p) continue; // unsolicited / already timed out
-      clearTimeout(p.timer);
+      if (p.timer) clearTimeout(p.timer);
       this.pending.delete(msg.id as number);
       p.resolve(msg);
     }
@@ -186,7 +235,7 @@ export class InspectorClient {
     const sock = this.socket;
     this.socket = null;
     for (const [, p] of this.pending) {
-      clearTimeout(p.timer);
+      if (p.timer) clearTimeout(p.timer);
       p.reject(new InspectorTransportError("client disconnected"));
     }
     this.pending.clear();
@@ -195,28 +244,37 @@ export class InspectorClient {
 
   // --- raw send ------------------------------------------------------------
 
-  async sendTimed<T>(command: InspectorCommand, params: Record<string, unknown> = {}): Promise<TimedResponse<T>> {
+  async sendTimed<T>(
+    command: InspectorCommand,
+    params: Record<string, unknown> = {},
+    opts: CommandOptions = {},
+  ): Promise<TimedResponse<T>> {
     if (this.fatal && !this.connected) throw this.fatal;
     await this.connect();
     const sock = this.socket;
     if (!sock) throw this.fatal ?? new InspectorTransportError("not connected");
 
+    const timeoutMs = opts.timeoutMs ?? this.currentTimeoutMs;
     const id = this.nextId++;
     const started = Date.now();
     const raw = await new Promise<InspectorRawResponse>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      // No timer at all for "none", or for a budget Node would overflow: a
+      // setTimeout past 2^31-1 ms fires after about 1 ms.
+      const timer = timerFor(timeoutMs, () => {
         this.pending.delete(id);
         reject(
           new InspectorTransportError(
-            `inspector command "${command}" timed out after ${this.timeoutMs}ms. ` +
-              `The Qt GUI thread services these synchronously, so a hung UI handler blocks the socket.`,
+            `inspector command "${command}" timed out after ${describeBudget(timeoutMs)}. ` +
+              `The Qt GUI thread services these synchronously, so a hung UI handler blocks the socket. ` +
+              `If the app is only slow (a synchronous backend call holds that thread until the bridge ` +
+              `gives up), raise command_timeout in the spec or --command-timeout.`,
           ),
         );
-      }, this.timeoutMs);
+      });
       this.pending.set(id, { resolve, reject, timer, command });
       sock.write(JSON.stringify({ id, command, params }) + "\n", (err) => {
         if (err) {
-          clearTimeout(timer);
+          if (timer) clearTimeout(timer);
           this.pending.delete(id);
           reject(new InspectorTransportError(`write failed: ${err.message}`, err));
         }
@@ -227,8 +285,8 @@ export class InspectorClient {
     return { data: raw as unknown as T, elapsedMs: Date.now() - started };
   }
 
-  async send<T>(command: InspectorCommand, params: Record<string, unknown> = {}): Promise<T> {
-    return (await this.sendTimed<T>(command, params)).data;
+  async send<T>(command: InspectorCommand, params: Record<string, unknown> = {}, opts: CommandOptions = {}): Promise<T> {
+    return (await this.sendTimed<T>(command, params, opts)).data;
   }
 
   /**
@@ -379,6 +437,18 @@ function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n) + "…";
 }
 
-export function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/**
+ * Wait `ms` milliseconds, however many that is.
+ *
+ * A single setTimeout past 2^31-1 ms fires after about 1 ms, so a long wait is
+ * taken in pieces Node can time. Infinity never resolves, which is what an
+ * unlimited wait means.
+ */
+export async function sleep(ms: number): Promise<void> {
+  let left = ms;
+  while (left > MAX_TIMER_MS) {
+    await new Promise((r) => setTimeout(r, MAX_TIMER_MS));
+    left -= MAX_TIMER_MS;
+  }
+  await new Promise((r) => setTimeout(r, Math.max(0, left)));
 }

@@ -6,6 +6,14 @@ import { LogBuffer } from "../dist/logs/buffer.js";
 import { parseLine, pairFailures, UNATTRIBUTED } from "../dist/logs/classify.js";
 import { classifyOutcome } from "../dist/runner/outcome.js";
 import { UiSnapshot } from "../dist/runner/snapshot.js";
+import { DIALECTS, dialectTest } from "./helpers/basecamp-logs.mjs";
+
+// Every case below runs once per Basecamp dialect: 0.3.0 split the transport's
+// failure line in two, and a verdict must not depend on which one printed it.
+// SYNC_FAIL is the line each version really printed (tests/fixtures).
+for (const DIALECT of DIALECTS) {
+const test = dialectTest(DIALECT);
+const SYNC_FAIL = DIALECT.syncFail;
 
 const win = (lines) => {
   const b = new LogBuffer();
@@ -92,7 +100,7 @@ test("a failure names the dispatch it was matched to", () => {
   const lines = [
     'LogosAPIClient: invoking remote method "mod" "slowThing" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "slowThing" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const w = win(lines);
   const [f] = [...pairFailures(w).values()];
@@ -103,7 +111,7 @@ test("a failure names the dispatch it was matched to", () => {
 });
 
 test("an unanchored failure carries no anchor to mis-attribute", () => {
-  const [f] = [...pairFailures(win(["RemoteLogosObject: callRemoteMethod failed or timed out: 1"])).values()];
+  const [f] = [...pairFailures(win([SYNC_FAIL])).values()];
   assert.equal(f.method, UNATTRIBUTED);
   assert.equal(f.anchorSeq, undefined);
 });
@@ -118,7 +126,7 @@ test("a later click's healthy dispatch is not stolen as the victim", () => {
     '[LogosObject] RemoteLogosObject::callMethod "slowThing" args: 0',
     'LogosAPIClient: invoking remote method "mod" "fastThing" args_count: 0',   // click B
     '[LogosObject] RemoteLogosObject::callMethod "fastThing" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",               // A's timeout
+    SYNC_FAIL,               // A's timeout
   ];
   const w = win(lines);
   const [f] = [...pairFailures(w).values()];
@@ -142,7 +150,7 @@ test("a hedged failure does not grade an innocent click as failed", () => {
     '[LogosObject] RemoteLogosObject::callMethod "slowThing" args: 0',
     'LogosAPIClient: invoking remote method "mod" "fastThing" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "fastThing" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const r = graded({ window: win(lines) });
   assert.notEqual(r.outcome, "failed", "a guess must not accuse this control");
@@ -157,7 +165,7 @@ test("an unambiguous failure still fails the click", () => {
   const lines = [
     'LogosAPIClient: invoking remote method "mod" "doThing" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "doThing" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const r = graded({ window: win(lines) });
   assert.equal(r.outcome, "failed");
@@ -170,7 +178,7 @@ test("a caller can supply the failures its own window owns", () => {
   const lines = [
     'LogosAPIClient: invoking remote method "mod" "other" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "other" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const none = graded({ window: win(lines), failures: [] });
   // The click did dispatch a call, so `ran` — but it owns no failure, so it is
@@ -299,3 +307,4 @@ test("a control's own label wins over a caption for naming, and says so", async 
   assert.equal(q[0].namedBy, "container");
   assert.deepEqual(q[0].alsoLabelled, ["Review the details below."]);
 });
+}

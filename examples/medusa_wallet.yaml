@@ -1,11 +1,18 @@
 # Testing the Medusa wallet's onboarding flow.
 #
-#   npx sitometres run examples/medusa_wallet.yaml
+#   npx sitometres run examples/medusa_wallet.yaml --no-setup
 #
-# No environment setup needed: sitometres gives the app a throwaway $HOME, and
-# medusa_core resolves its wallet under $HOME. With an empty wallet, medusa_ui
-# opens on "Create your wallet", which is what this spec drives. Pass
-# --real-home if you ever want to run this against your actual wallet.
+# --no-setup is load-bearing, not tidiness. profiles/medusa_ui.yaml is picked
+# up automatically for medusa_ui and walks this same onboarding, so without the
+# flag the wallet is created AND unlocked before step 1 runs, and the spec fails
+# asking for a screen it drove past itself.
+#
+# Nothing else to set up: sitometres gives the app a throwaway $HOME and
+# medusa_core resolves its wallet under $HOME, so a run starts with no wallet
+# and medusa_ui opens on "Create your wallet", which is what this spec drives.
+# --real-home is no use here - your real wallet already exists, so the app opens
+# on the unlock screen and step 1 fails. Unlock that one with
+# --wallet-password and test something behind the gate instead.
 
 app: medusa_ui
 with: [medusa_core]

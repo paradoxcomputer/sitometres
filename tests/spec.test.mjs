@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { validateSpec, parseDuration, asArray } from "../dist/spec/schema.js";
+import { validateSpec, parseDuration, asArray, evalTarget } from "../dist/spec/schema.js";
 import { toJUnit } from "../dist/report/machine.js";
 
 test("parses durations in every accepted form", () => {
@@ -334,4 +334,65 @@ test("JUnit maps inconclusive to skipped, not to a pass or a failure", () => {
   assert.match(xml, /tests="3" failures="1" skipped="1"/);
   assert.match(xml, /<skipped message="calls x\.y: no call logging"\/>/);
   assert.match(xml, /<failure message="sees &quot;Done&quot;">/);
+});
+
+// --- state: and eval: with in: -----------------------------------------------
+//
+// A dApp spec has to watch the wallet's state without leaving the dApp. The
+// object form carries the app with the expression; a string keeps meaning the
+// current app's root, so every spec written before the form existed is
+// unchanged.
+
+test("a string state: is unchanged", () => {
+  const spec = validateSpec({ steps: [{ open: "tip_jar", expect: { state: "root.phase === 'idle'" } }] });
+  assert.equal(spec.steps[0].expect.state, "root.phase === 'idle'");
+  assert.deepEqual(evalTarget(spec.steps[0].expect.state), { expr: "root.phase === 'idle'" });
+});
+
+test("{ expr, in } is accepted in expect:, wait_for: and eval:", () => {
+  const spec = validateSpec({
+    steps: [
+      { wait_for: { state: { expr: "connectSheet.visible", in: "medusa_ui" } } },
+      { click: "Connect", expect: { state: ["root.phase === 'connecting'", { expr: "connectSheet.visible", in: "Medusa" }] } },
+      { eval: { expr: "root.connAccountSel = ({})", in: "medusa_ui" } },
+      { eval: { expr: "1" } },
+    ],
+  });
+  assert.deepEqual(evalTarget(spec.steps[0].waitFor.state), { expr: "connectSheet.visible", in: "medusa_ui" });
+  assert.deepEqual(evalTarget(spec.steps[1].expect.state[1]), { expr: "connectSheet.visible", in: "Medusa" });
+  assert.deepEqual(evalTarget(spec.steps[2].eval), { expr: "root.connAccountSel = ({})", in: "medusa_ui" });
+  assert.deepEqual(evalTarget(spec.steps[3].eval), { expr: "1" }, "`in` is optional");
+});
+
+test("a malformed object is refused before launch, with its path", () => {
+  assert.throws(
+    () => validateSpec({ steps: [{ open: "x" }, { expect: { state: { in: "medusa_ui" } } }] }),
+    /^SpecError: \$\.steps\[1\]\.expect\.state: `state` needs an `expr`/,
+  );
+  assert.throws(
+    () => validateSpec({ steps: [{ wait_for: { state: ["ok", { expr: "" }] } }] }),
+    /\$\.steps\[0\]\.waitFor\.state\[1\]: `state` needs an `expr`/,
+    "an empty expression evaluates nothing",
+  );
+  assert.throws(
+    () => validateSpec({ steps: [{ eval: { expr: "1", where: "medusa_ui" } }] }),
+    /\$\.steps\[0\]\.eval: unknown key `where` in `eval`\. Known: expr, in/,
+  );
+  assert.throws(
+    () => validateSpec({ steps: [{ eval: { expr: "1", in: 3 } }] }),
+    /\$\.steps\[0\]\.eval: `in` must name a staged app, as a string/,
+  );
+  assert.throws(
+    () => validateSpec({ steps: [{ click: "a", expect: { state: [["nested"]] } }] }),
+    /\$\.steps\[0\]\.expect\.state\[0\]: `state` must be an expression or/,
+  );
+});
+
+test("every example in examples/ still validates", async () => {
+  const fs = await import("node:fs");
+  const YAML = (await import("yaml")).default;
+  const dir = new URL("../examples/", import.meta.url);
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".yaml"));
+  assert.ok(files.length >= 5, `found ${files.length}`);
+  for (const f of files) validateSpec(YAML.parse(fs.readFileSync(new URL(f, dir), "utf8")));
 });

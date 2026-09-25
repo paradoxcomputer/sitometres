@@ -12,6 +12,14 @@ import assert from "node:assert/strict";
 import { LogBuffer } from "../dist/logs/buffer.js";
 import { parseLine, callsIn, callName, pairFailures } from "../dist/logs/classify.js";
 import { runChecks, observedCalls, verdictOf } from "../dist/runner/assert.js";
+import { DIALECTS, dialectTest } from "./helpers/basecamp-logs.mjs";
+
+// Every case below runs once per Basecamp dialect: 0.3.0 split the transport's
+// failure line in two, and a verdict must not depend on which one printed it.
+// SYNC_FAIL is the line each version really printed (tests/fixtures).
+for (const DIALECT of DIALECTS) {
+const test = dialectTest(DIALECT);
+const SYNC_FAIL = DIALECT.syncFail;
 
 const windowOf = (lines) => {
   const b = new LogBuffer();
@@ -95,7 +103,7 @@ test("an ignore entry cannot silence a failure it does not own", async () => {
     'LogosAPIClient: invoking remote method "medusa_core" "sendTip" args_count: 1',
     '[LogosObject] RemoteLogosObject::callMethod "sendTip" args: 1',
     '[LogosObject] RemoteLogosObject::callMethod "pendingRequests" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const checks = await runChecks(ctx(overlapping, { ignoreCalls: ["medusa_core.pendingRequests"] }), {});
   const c = checks.find((k) => k.kind === "callsSucceed");
@@ -107,7 +115,7 @@ test("an unambiguous failure of an ignored call is still silenced", async () => 
   const onlyPoll = [
     'LogosAPIClient: invoking remote method "medusa_core" "pendingRequests" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "pendingRequests" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const checks = await runChecks(ctx(onlyPoll, { ignoreCalls: ["medusa_core.pendingRequests"] }), {});
   assert.equal(checks.find((k) => k.kind === "callsSucceed"), undefined);
@@ -115,7 +123,7 @@ test("an unambiguous failure of an ignored call is still silenced", async () => 
 
 test("every failure in a burst is reported", () => {
   const lines = ['[LogosObject] RemoteLogosObject::callMethod "poll" args: 0'];
-  for (let i = 0; i < 22; i++) lines.push("RemoteLogosObject: callRemoteMethod failed or timed out: 1");
+  for (let i = 0; i < 22; i++) lines.push(SYNC_FAIL);
   const paired = [...pairFailures(windowOf(lines)).values()];
   assert.equal(paired.length, 22, "22 real failures used to report as 1, leaving the step green");
   assert.equal(paired.filter((f) => f.confident).length, 1, "only the anchored one is confident");
@@ -131,7 +139,7 @@ test("an ignore entry does not silence another module's identically-named call",
   const lines = [
     'LogosAPIClient: invoking remote method "their_core" "getJob" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "getJob" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const r = classifyOutcome({
     window: windowOf(lines),
@@ -148,7 +156,7 @@ test("the crawl and the spec runner agree on what an ignore list hides", async (
   const lines = [
     'LogosAPIClient: invoking remote method "my_core" "poll" args_count: 0',
     '[LogosObject] RemoteLogosObject::callMethod "poll" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   for (const form of ["my_core.poll", "poll", "my_core.*"]) {
     const crawl = classifyOutcome({
@@ -172,7 +180,7 @@ test("an unattributable failure is reported, not blamed on the step", async () =
   // It used to FAIL the step. The only escape was `calls_succeed: false`, which also
   // disables the check for the failures that ARE attributable — so the honest reading of the
   // evidence cost you the part of the check that works. It is inconclusive now.
-  const lines = ["RemoteLogosObject: callRemoteMethod failed or timed out: 1"];
+  const lines = [SYNC_FAIL];
   const checks = await runChecks(ctx(lines), {});
   const c = checks.find((k) => k.kind === "callsSucceed");
   assert.equal(c.verdict, "inconclusive");
@@ -190,10 +198,11 @@ test("an ATTRIBUTABLE failure still fails the step", async () => {
   // The other half of the change above: softening the unanchored case must not soften the
   // case the check exists for. A failure that pairs with a dispatch in the window names a
   // call, and that still fails.
-  const lines = [...SYNC_CALL, "RemoteLogosObject: callRemoteMethod failed or timed out: 1"];
+  const lines = [...SYNC_CALL, SYNC_FAIL];
   const checks = await runChecks(ctx(lines), {});
   const c = checks.find((k) => k.kind === "callsSucceed" && k.verdict === "fail");
   assert.ok(c, "an attributable failure must still fail the step");
   assert.match(c.detail, /connectRequest/, "and it must name the call");
   assert.equal(verdictOf(checks), "fail");
 });
+}

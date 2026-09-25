@@ -1,0 +1,420 @@
+LogosBasecamp version 0.2.2 (dev build)
+Build commits:
+  - logos-basecamp d41a72bc7d77cfe25dfe2b888a70f16832ec8c53
+  - logos-nix e637a1f5e871244d1c2df1e3c52a067f2eb406f2
+  - logos-cpp-sdk 2e31eeb1ac2c55245fbaa3030ff0a164fb68dd06
+  - logos-module 2ec64c4a65f8966b5137cdba3a19a6498ce17b6d
+  - logos-liblogos be221c5749036343909fa0b109edecfb4d329fdd
+  - logos-package-manager 202af6fa0f0f4493bc59c8a609dff9326f78a18d
+  - logos-package-manager-module cad6bab044d09eb54fe9a8efb20ed94694eb44ff
+  - logos-package-downloader-module 19994dc92d6e0b41b6ebba484f22dc7f5dd1c645
+  - logos-capability-module 390486e225dcbf7e95072808f3130a35e4a694c6
+  - logos-package 8d4236f9453bce8b44dfd2f85a5006af993b7ed2
+  - logos-package-manager-ui dfb0c208b12df9604ef7825125acca59d6ef9e01
+  - logos-design-system 32cc9b40195b1f42b8a8c1affb56ebd3dcfef7f4
+  - logos-view-module-runtime 049978f144aa53d8b98ea2c0b164b0554c88c856
+  - logos-qt-mcp 1fea509485a48ab185fafae8dc21bdbcc808a07e
+  - nix-bundle-logos-module-install 55de9a6fce755387224ececd0493f46b028ee0a3
+  - nix-bundle-dir 4f72d7a64dd83979d771c17161f23ebc9dbedb40
+  - nix-bundle-appimage 8fcc56b5afcc313ca917cf3487be082ae2f0184c
+  - nix-bundle-macos-app d6b0cc518e599ab7a52258bf3e1f8123c8a01d31
+Base data directory: /tmp/sito-userdir
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:04:54.844"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:54.844"
+LogosAPIConsumer: Informing module token for module: "capability_module" with token: "redacted:b3f35484…"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:04:54.845"
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] CapabilityModulePlugin: created
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] [LogosProviderObject] LogosAPIProvider: wrapping QObject in QtProviderObject for "capability_module"
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] qt.core.qobject.connect: QObject::connect: No such signal CapabilityModulePlugin::eventResponse(QString, QVariantList)
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: connected to QObject eventResponse signal
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: calling initLogos on wrapped QObject
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] CapabilityModulePlugin: LogosAPI initialized
+[2026-09-24 23:04:54.856] [info] [logos] [capability_module] [LogosProviderObject] ModuleProxy: created, wrapping LogosProviderObject "capability_module"
+[2026-09-24 23:04:54.857] [info] [logos] [capability_module] RemoteTransportHost: Created registry host with URL: "local:logos_capability_module_db8e13d2ccf9"
+[2026-09-24 23:04:54.857] [info] [logos] [capability_module] RemoteTransportHost: Published object: "capability_module"
+[2026-09-24 23:04:54.857] [info] [logos] [capability_module] [LogosProviderObject] LogosAPIProvider: successfully published "capability_module"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824577792
+[LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "capability_module"
+[2026-09-24 23:04:55.107] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: saving token for module: "capability_module"
+[2026-09-24 23:04:55.107] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: saving token for module: "capability_module"
+LogosAPIConsumer: informModuleToken completed with result: true
+[LogosObject] Destroying RemoteLogosObject 0
+[2026-09-24 23:04:55.107] [info] [logos] Module loaded: capability_module
+Logos Core started successfully!
+LogosAPIConsumer: Informing module token for module: "package_manager" with token: "redacted:f2964eba…"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:04:55.111"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824534928
+[LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "package_manager"
+[2026-09-24 23:04:55.110] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: saving token for module: "package_manager"
+LogosAPIConsumer: informModuleToken completed with result: true
+[LogosObject] Destroying RemoteLogosObject 0
+[2026-09-24 23:04:55.111] [info] [logos] Module loaded: package_manager
+package_manager module loaded by default.
+LogosAPIConsumer: Informing module token for module: "package_downloader" with token: "redacted:4097ba7c…"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:04:55.114"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824518912
+[LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "package_downloader"
+[2026-09-24 23:04:55.114] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: saving token for module: "package_downloader"
+LogosAPIConsumer: informModuleToken completed with result: true
+[LogosObject] Destroying RemoteLogosObject 0
+[2026-09-24 23:04:55.114] [info] [logos] Module loaded: package_downloader
+package_downloader module loaded by default.
+Currently loaded modules:
+  - "package_manager"
+  - "package_downloader"
+  - "capability_module"
+Total modules: 3
+LogosAPI: printing keys
+LogosAPI: Token key: "capability_module" value: "00000000-0000-4000-8000-000000000000"
+LogosAPI: Token key: "package_manager" value: "00000000-0000-4000-8000-000000000000"
+LogosAPI: Token key: "package_downloader" value: "00000000-0000-4000-8000-000000000000"
+MainUIPlugin created
+-----> MainUIPlugin::createWidget: logosAPI: LogosAPI(0x7ffc253c7290)
+-----> MainUIPlugin::createWidget: Token key: "capability_module" value: "00000000-0000-4000-8000-000000000000"
+-----> MainUIPlugin::createWidget: Token key: "package_manager" value: "00000000-0000-4000-8000-000000000000"
+-----> MainUIPlugin::createWidget: Token key: "package_downloader" value: "00000000-0000-4000-8000-000000000000"
+RemoteTransportConnection: Connecting to registry: "local:logos_package_manager_db8e13d2ccf9" at "23:04:55.119"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_package_manager_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:55.119"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:04:55.119"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:55.119"
+RemoteTransportConnection: Connecting to registry: "local:logos_package_downloader_db8e13d2ccf9" at "23:04:55.119"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_package_downloader_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:55.119"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:04:55.119"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:55.119"
+LogosAPIClient: invoking remote method "package_manager" "setEmbeddedModulesDirectory" args_count: 1
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "setEmbeddedModulesDirectory" args_count: 1 timeout: 20000
+RemoteTransportConnection: Requesting object: "package_manager" at "23:04:55.119"
+[2026-09-24 23:04:55.122] [info] [logos] [package_manager] [LogosProviderObject] LogosAPIProvider: detected LogosProviderPlugin for "package_manager"
+[2026-09-24 23:04:55.122] [info] [logos] [package_manager] [LogosProviderObject] LogosAPIProvider: registering LogosProviderObject directly for "package_manager"
+[2026-09-24 23:04:55.122] [info] [logos] [package_manager] [LogosProviderObject] LogosProviderBase::init called
+[2026-09-24 23:04:55.122] [info] [logos] [package_manager] [LogosProviderObject] ModuleProxy: created, wrapping LogosProviderObject "package_manager"
+[2026-09-24 23:04:55.123] [info] [logos] [package_manager] RemoteTransportHost: Created registry host with URL: "local:logos_package_manager_db8e13d2ccf9"
+[2026-09-24 23:04:55.123] [info] [logos] [package_manager] RemoteTransportHost: Published object: "package_manager"
+[2026-09-24 23:04:55.123] [info] [logos] [package_manager] [LogosProviderObject] LogosAPIProvider: successfully published "package_manager"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] [LogosProviderObject] LogosAPIProvider: detected LogosProviderPlugin for "package_downloader"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] [LogosProviderObject] LogosAPIProvider: registering LogosProviderObject directly for "package_downloader"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] [LogosProviderObject] LogosProviderBase::init called
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] [LogosProviderObject] ModuleProxy: created, wrapping LogosProviderObject "package_downloader"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] RemoteTransportHost: Created registry host with URL: "local:logos_package_downloader_db8e13d2ccf9"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] RemoteTransportHost: Published object: "package_downloader"
+[2026-09-24 23:04:55.125] [info] [logos] [package_downloader] [LogosProviderObject] LogosAPIProvider: successfully published "package_downloader"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_manager"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824790400
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "setEmbeddedModulesDirectory"
+[LogosObject] RemoteLogosObject::callMethod "setEmbeddedModulesDirectory" args: 1
+[2026-09-24 23:04:55.382] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setEmbeddedModulesDirectory" args: 1
+LogosAPIClient: invoking remote method "package_manager" "setUserModulesDirectory" args_count: 1
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "setUserModulesDirectory" args_count: 1 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "setUserModulesDirectory"
+[LogosObject] RemoteLogosObject::callMethod "setUserModulesDirectory" args: 1
+[2026-09-24 23:04:55.382] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setUserModulesDirectory" args: 1
+LogosAPIClient: invoking remote method "package_manager" "setEmbeddedUiPluginsDirectory" args_count: 1
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "setEmbeddedUiPluginsDirectory" args_count: 1 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "setEmbeddedUiPluginsDirectory"
+[LogosObject] RemoteLogosObject::callMethod "setEmbeddedUiPluginsDirectory" args: 1
+[2026-09-24 23:04:55.383] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setEmbeddedUiPluginsDirectory" args: 1
+LogosAPIClient: invoking remote method "package_manager" "setUserUiPluginsDirectory" args_count: 1
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "setUserUiPluginsDirectory" args_count: 1 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "setUserUiPluginsDirectory"
+[LogosObject] RemoteLogosObject::callMethod "setUserUiPluginsDirectory" args: 1
+[2026-09-24 23:04:55.383] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "setUserUiPluginsDirectory" args: 1
+LogosAPIConsumer: Requesting object: "package_manager" at "23:04:55.383"
+RemoteTransportConnection: Requesting object: "package_manager" at "23:04:55.383"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_manager"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824796576
+[LogosObject] LogosAPIConsumer: acquired LogosObject for: "package_manager" (id: 824796576 )
+[LogosObject] LogosAPIConsumer::onEvent registering for: "corePluginFileInstalled" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "corePluginFileInstalled"
+[LogosObject] LogosAPIConsumer: event callback registered for: "corePluginFileInstalled"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "uiPluginFileInstalled" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "uiPluginFileInstalled"
+[LogosObject] LogosAPIConsumer: event callback registered for: "uiPluginFileInstalled"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "corePluginUninstalled" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "corePluginUninstalled"
+[LogosObject] LogosAPIConsumer: event callback registered for: "corePluginUninstalled"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "uiPluginUninstalled" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "uiPluginUninstalled"
+[LogosObject] LogosAPIConsumer: event callback registered for: "uiPluginUninstalled"
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "resetPendingAction"
+[LogosObject] RemoteLogosObject::callMethodAsync "resetPendingAction" args: 0
+[LogosObject] LogosAPIConsumer::onEvent registering for: "beforeUninstall" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "beforeUninstall"
+[LogosObject] LogosAPIConsumer: event callback registered for: "beforeUninstall"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "beforeUpgrade" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "beforeUpgrade"
+[LogosObject] LogosAPIConsumer: event callback registered for: "beforeUpgrade"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "beforeInstall" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "beforeInstall"
+[LogosObject] LogosAPIConsumer: event callback registered for: "beforeInstall"
+[LogosObject] LogosAPIConsumer::onEvent registering for: "beforeMultiUninstall" on LogosObject id: 0x31293ac0
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "beforeMultiUninstall"
+[LogosObject] LogosAPIConsumer: event callback registered for: "beforeMultiUninstall"
+LogosAPIConsumer: Requesting object: "package_downloader" at "23:04:55.383"
+RemoteTransportConnection: Requesting object: "package_downloader" at "23:04:55.384"
+[2026-09-24 23:04:55.383] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "resetPendingAction" args: 0
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_downloader"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 824924064
+[LogosObject] LogosAPIConsumer: acquired LogosObject for: "package_downloader" (id: 824924064 )
+[LogosObject] LogosAPIConsumer::onEvent registering for: "catalogChanged" on LogosObject id: 0x312bf520
+[LogosObject] RemoteLogosObject::onEvent subscribing to event: "catalogChanged"
+[LogosObject] LogosAPIConsumer: event callback registered for: "catalogChanged"
+MainUIBackend created
+qrc:/qt/qml/Basecamp/AppManager/Basecamp/AppManager/AppManagerView.qml:223:29: QML LogosTabBar: Binding loop detected for property "implicitWidth":
+qrc:/qt-project.org/imports/QtQuick/Controls/Basic/TabBar.qml:10:5
+MainContainer created
+System tray is not available on this system
+This plugin does not support propagateSizeHints()
+[QmlInspector] Inspector server listening on port 36333
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getInstalledUiPlugins"
+[LogosObject] RemoteLogosObject::callMethodAsync "getInstalledUiPlugins" args: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+RemoteTransportConnection: Requesting object: "package_downloader" at "23:04:55.825"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_downloader"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 838573888
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "listRepositories"
+[LogosObject] RemoteLogosObject::callMethodAsync "listRepositories" args: 0
+[2026-09-24 23:04:55.829] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getInstalledUiPlugins" args: 0
+[2026-09-24 23:04:55.829] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "listRepositories" args: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getInstalledPackages"
+[LogosObject] RemoteLogosObject::callMethodAsync "getInstalledPackages" args: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getCatalog"
+[LogosObject] RemoteLogosObject::callMethodAsync "getCatalog" args: 0
+[2026-09-24 23:04:55.832] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getInstalledPackages" args: 0
+[2026-09-24 23:04:55.868] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "getCatalog" args: 0
+[QmlInspector] Client connected from "::ffff:127.0.0.1"
+App launcher clicked: "package_manager_ui"
+Loading UI module: "package_manager_ui"
+Loading core dependency for "package_manager_ui" : "package_manager"
+Loading core dependency for "package_manager_ui" : "package_downloader"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:04:56.072"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:04:56.072"
+LogosAPIConsumer: Informing module token for module: "package_manager_ui" with token: "redacted:6f1af050…"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:04:56.072"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 832955360
+[LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "package_manager_ui"
+[2026-09-24 23:04:56.073] [info] [logos] [capability_module] [LogosProviderObject] QtProviderObject: saving token for module: "package_manager_ui"
+LogosAPIConsumer: informModuleToken completed with result: true
+[LogosObject] Destroying RemoteLogosObject 0
+ViewModuleHost: spawning "/nix/store/i4bfv16ff1y1dhxkqfdbcfsmpbqif97j-logos-basecamp-0.2.2/bin/ui-host" for "package_manager_ui"
+ui-host [ "package_manager_ui" ]: "ui-host: loaded plugin \"package_manager_ui\" from \"/nix/store/i4bfv16ff1y1dhxkqfdbcfsmpbqif97j-logos-basecamp-0.2.2/plugins/package_manager_ui/package_manager_ui_plugin.so\""
+ui-host [ "package_manager_ui" ]: "PackageManagerUiPlugin: backend initialized\nui-host: called initLogos on plugin \"package_manager_ui\""
+ui-host [ "package_manager_ui" ]: "ui-host: remoting enabled for \"package_manager_ui\""
+ui-host [ "package_manager_ui" ]: "ui-host: remoted model property packages as \"package_manager_ui/packages\" with roles QList(269, 274, 273, 261, 276, 258, 280, 268, 263, 264, 282, 267, 272, 271, 270, 278, 259, 266, 275, 277, 260, 283, 257, 281, 279, 262, 265)"
+ViewModuleHost: process ready for "package_manager_ui"
+ui-host [ "package_manager_ui" ]: "RemoteTransportConnection: Connecting to registry: \"local:logos_package_downloader_db8e13d2ccf9\" at \"23:04:56.093\"\nRemoteTransportConnection: Successfully connected to registry: \"local:logos_package_downloader_db8e13d2ccf9\"\nRemoteTransportConnection: Connected to registry at \"23:04:56.093\"\nRemoteTransportConnection: Connecting to registry: \"local:logos_capability_module_db8e13d2ccf9\" at \"23:04:56.093\"\nRemoteTransportConnection: Successfully connected to registry: \"local:logos_capability_module_db8e13d2ccf9\"\nRemoteTransportConnection: Connected to registry at \"23:04:56.093\"\nRemoteTransportConnection: Connecting to registry: \"local:logos_package_manager_db8e13d2ccf9\" at \"23:04:56.093\"\nRemoteTransportConnection: Successfully connected to registry: \"local:logos_package_manager_db8e13d2ccf9\"\nRemoteTransportConnection: Connected to registry at \"23:04:56.093\"\nRemoteTransportConnection: Connecting to registry: \"local:logos_capability_module_db8e13d2ccf9\" at \"23:04:56.093\"\nRemoteTransportConnection: Successfully connected to registry: \"local:logos_capability_module_db8e13d2ccf9\"\nRemoteTransportConnection: Connected to registry at \"23:04:56.093\"\nLogosAPIConsumer: Requesting object: \"package_manager\" at \"23:04:56.093\"\nRemoteTransportConnection: Requesting object: \"package_manager\" at \"23:04:56.094\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_manager\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538683632\n[LogosObject] LogosAPIConsumer: acquired LogosObject for: \"package_manager\" (id: 538683632 )\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"uninstallCancelled\" on LogosObject id: 0x201d31a0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"uninstallCancelled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"uninstallCancelled\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"upgradeCancelled\" on LogosObject id: 0x201d31a0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"upgradeCancelled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"upgradeCancelled\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"installCancelled\" on LogosObject id: 0x201d31a0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"installCancelled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"installCancelled\"\nLogosAPIConsumer: Requesting object: \"package_manager\" at \"23:04:56.094\"\nRemoteTransportConnection: Requesting object: \"package_manager\" at \"23:04:56.094\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_manager\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538788112\n[LogosObject] LogosAPIConsumer: acquired LogosObject for: \"package_manager\" (id: 538788112 )\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"corePluginFileInstalled\" on LogosObject id: 0x201b97b0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"corePluginFileInstalled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"corePluginFileInstalled\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"uiPluginFileInstalled\" on LogosObject id: 0x201b97b0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"uiPluginFileInstalled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"uiPluginFileInstalled\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"corePluginUninstalled\" on LogosObject id: 0x201b97b0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"corePluginUninstalled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"corePluginUninstalled\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"uiPluginUninstalled\" on LogosObject id: 0x201b97b0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"uiPluginUninstalled\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"uiPluginUninstalled\"\nLogosAPIConsumer: Requesting object: \"package_downloader\" at \"23:04:56.094\"\nRemoteTransportConnection: Requesting object: \"package_downloader\" at \"23:04:56.094\""
+file:///nix/store/i4bfv16ff1y1dhxkqfdbcfsmpbqif97j-logos-basecamp-0.2.2/plugins/package_manager_ui/qml/Panels/TableHeader.qml:65:9: QML LogosTabBar: Binding loop detected for property "implicitWidth":
+qrc:/qt-project.org/imports/QtQuick/Controls/Basic/TabBar.qml:10:5
+Successfully loaded UI module: "package_manager_ui"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] ModuleProxy: callRemoteMethod "requestModule" args: 2
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule called with fromModuleName: "package_manager_ui" moduleName: "package_downloader"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] CapabilityModulePlugin: Calling informModuleToken on target module: "package_downloader"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Connecting to registry: "local:logos_package_downloader_db8e13d2ccf9" at "23:04:56.331"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Successfully connected to registry: "local:logos_package_downloader_db8e13d2ccf9"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Connected to registry at "23:04:56.331"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:04:56.331"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+[2026-09-24 23:04:56.330] [info] [logos] [capability_module] RemoteTransportConnection: Connected to registry at "23:04:56.331"
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] LogosAPIConsumer: Informing module token for module: "package_manager_ui" with token: "redacted:332837d5…"
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] RemoteTransportConnection: Requesting object: "package_downloader" at "23:04:56.331"
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] [LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_downloader"
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] [LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 211997552
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] [LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "package_manager_ui" on "package_downloader"
+[2026-09-24 23:04:56.331] [info] [logos] [package_downloader] [LogosProviderObject] Saving token for module: "package_manager_ui"
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] LogosAPIConsumer: informModuleToken completed with result: true
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] [LogosObject] Destroying RemoteLogosObject 0
+[2026-09-24 23:04:56.331] [info] [logos] [capability_module] CapabilityModulePlugin: Successfully informed "package_downloader" about token for "package_manager_ui"
+[2026-09-24 23:04:56.332] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "refreshCatalog" args: 0
+ui-host [ "package_manager_ui" ]: "[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_downloader\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538797920\n[LogosObject] LogosAPIConsumer: acquired LogosObject for: \"package_downloader\" (id: 538797920 )\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"catalogChanged\" on LogosObject id: 0x201f3160\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"catalogChanged\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"catalogChanged\"\nLogosAPIConsumer: Requesting object: \"package_manager\" at \"23:04:56.330\"\nRemoteTransportConnection: Requesting object: \"package_manager\" at \"23:04:56.330\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_manager\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538788464\n[LogosObject] LogosAPIConsumer: acquired LogosObject for: \"package_manager\" (id: 538788464 )\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"upgradeUninstallDone\" on LogosObject id: 0x201f2fc0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"upgradeUninstallDone\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"upgradeUninstallDone\"\n[LogosObject] LogosAPIConsumer::onEvent registering for: \"installApproved\" on LogosObject id: 0x201f2fc0\n[LogosObject] RemoteLogosObject::onEvent subscribing to event: \"installApproved\"\n[LogosObject] LogosAPIConsumer: event callback registered for: \"installApproved\"\nLogosAPIClient: getToken for module: \"package_downloader\"\nLogosAPIClient: No token found for module: \"package_downloader\"\nLogosAPIClient: getToken for module: \"capability_module\"\nLogosAPIClient: Found token for module: \"capability_module\"\nRemoteTransportConnection: Requesting object: \"capability_module\" at \"23:04:56.330\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"capability_module\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538927264\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"requestModule\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"requestModule\" args: 2\nRemoteTransportConnection: Requesting object: \"package_downloader\" at \"23:04:56.332\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_downloader\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538965952\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"refreshCatalog\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"refreshCatalog\" args: 0"
+qml: sito-probe-console
+qml: sito-probe-warn
+qml: sito-probe-error
+file:///tmp/sito-probe/plugins/probe_app/Probe.qml:1:68: QML QQuickImage: Cannot open: file:///nonexistent-sito-probe.png
+file:///tmp/sito-probe/plugins/probe_app/Probe.qml:1: ReferenceError: undefinedProbeFn is not defined
+LogosAPIClient: invoking remote method "package_manager" "getInstalledPackages" args_count: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "getInstalledPackages" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "getInstalledPackages"
+[LogosObject] RemoteLogosObject::callMethod "getInstalledPackages" args: 0
+[2026-09-24 23:05:05.081] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getInstalledPackages" args: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "getInstalledPackages"
+[LogosObject] RemoteLogosObject::callMethodAsync "getInstalledPackages" args: 0
+[2026-09-24 23:05:05.084] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getInstalledPackages" args: 0
+qml: sito-async-done [{"author":"Logos Core Team","category":"security","dependen
+LogosAPIClient: invoking remote method "package_manager" "noSuchMethodSito" args_count: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "noSuchMethodSito" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "noSuchMethodSito"
+[LogosObject] RemoteLogosObject::callMethod "noSuchMethodSito" args: 0
+[2026-09-24 23:05:06.589] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "noSuchMethodSito" args: 0
+RemoteTransportConnection: Connecting to registry: "local:logos_no_such_module_sito_db8e13d2ccf9" at "23:05:06.591"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_no_such_module_sito_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:05:06.591"
+RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:05:06.591"
+RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+RemoteTransportConnection: Connected to registry at "23:05:06.591"
+LogosAPIClient: invoking remote method "no_such_module_sito" "foo" args_count: 0
+LogosAPIClient: getToken for module: "no_such_module_sito"
+LogosAPIClient: No token found for module: "no_such_module_sito"
+LogosAPIClient: calling requestModule for "no_such_module_sito"
+LogosAPIClient: getToken for module: "capability_module"
+LogosAPIClient: Found token for module: "capability_module"
+LogosAPIConsumer: requestModule for origin: "core" target: "no_such_module_sito"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:05:06.591"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 838882832
+[LogosObject] RemoteLogosObject::callMethod "requestModule" args: 2
+[2026-09-24 23:05:06.591] [info] [logos] [capability_module] ModuleProxy: callRemoteMethod "requestModule" args: 2
+[2026-09-24 23:05:06.591] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule called with fromModuleName: "core" moduleName: "no_such_module_sito"
+[2026-09-24 23:05:06.591] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule: rejecting request for unknown target module: "no_such_module_sito" - no token registered for it
+[LogosObject] Destroying RemoteLogosObject 0
+LogosAPIClient: requestModule result for "no_such_module_sito" : ""
+LogosAPIConsumer: Calling invokeRemoteMethod: "no_such_module_sito" "foo" args_count: 0 timeout: 20000
+RemoteTransportConnection: Requesting object: "no_such_module_sito" at "23:05:06.592"
+ui-host [ "package_manager_ui" ]: "RemoteLogosObject: async callMethod timed out\nLogosAPIClient: getToken for module: \"package_downloader\"\nLogosAPIClient: Found token for module: \"package_downloader\"\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"getCatalog\""
+ui-host [ "package_manager_ui" ]: "[LogosObject] RemoteLogosObject::callMethodAsync \"getCatalog\" args: 0"
+RemoteTransportConnection: Timeout waiting for replica: "no_such_module_sito"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "no_such_module_sito"
+[2026-09-24 23:05:26.704] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "getCatalog" args: 0
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: getToken for module: \"package_manager\""
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: No token found for module: \"package_manager\""
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: getToken for module: \"capability_module\"\nLogosAPIClient: Found token for module: \"capability_module\"\nRemoteTransportConnection: Requesting object: \"capability_module\" at \"23:05:27.538\""
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] ModuleProxy: callRemoteMethod "requestModule" args: 2
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule called with fromModuleName: "package_manager_ui" moduleName: "package_manager"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] CapabilityModulePlugin: Calling informModuleToken on target module: "package_manager"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Connecting to registry: "local:logos_package_manager_db8e13d2ccf9" at "23:05:27.542"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Successfully connected to registry: "local:logos_package_manager_db8e13d2ccf9"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Connected to registry at "23:05:27.542"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Connecting to registry: "local:logos_capability_module_db8e13d2ccf9" at "23:05:27.542"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Successfully connected to registry: "local:logos_capability_module_db8e13d2ccf9"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Connected to registry at "23:05:27.542"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] LogosAPIConsumer: Informing module token for module: "package_manager_ui" with token: "redacted:fe939657…"
+[2026-09-24 23:05:27.542] [info] [logos] [capability_module] RemoteTransportConnection: Requesting object: "package_manager" at "23:05:27.542"
+ui-host [ "package_manager_ui" ]: "[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"capability_module\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 539583296\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"requestModule\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"requestModule\" args: 2"
+[2026-09-24 23:05:27.546] [info] [logos] [capability_module] [LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "package_manager"
+[2026-09-24 23:05:27.546] [info] [logos] [capability_module] [LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 212216416
+[2026-09-24 23:05:27.546] [info] [logos] [capability_module] [LogosObject] LogosAPIConsumer: calling LogosObject::informModuleToken for "package_manager_ui" on "package_manager"
+[2026-09-24 23:05:27.546] [info] [logos] [package_manager] [LogosProviderObject] Saving token for module: "package_manager_ui"
+[2026-09-24 23:05:27.547] [info] [logos] [capability_module] LogosAPIConsumer: informModuleToken completed with result: true
+[2026-09-24 23:05:27.547] [info] [logos] [capability_module] [LogosObject] Destroying RemoteLogosObject 0
+[2026-09-24 23:05:27.547] [info] [logos] [capability_module] CapabilityModulePlugin: Successfully informed "package_manager" about token for "package_manager_ui"
+ui-host [ "package_manager_ui" ]: "RemoteTransportConnection: Requesting object: \"package_manager\" at \"23:05:27.547\"\n[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: \"package_manager\"\n[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 538966160\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"getInstalledPackages\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"getInstalledPackages\" args: 0"
+[2026-09-24 23:05:27.549] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getInstalledPackages" args: 0
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: getToken for module: \"package_manager\""
+[2026-09-24 23:05:27.555] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getValidVariants" args: 0
+[2026-09-24 23:05:27.555] [info] [logos] [package_manager] ModuleProxy: callRemoteMethod "getValidVariants" args: 0
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: Found token for module: \"package_manager\"\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"getValidVariants\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"getValidVariants\" args: 0"
+ui-host [ "package_manager_ui" ]: "LogosAPIClient: getToken for module: \"package_downloader\"\nLogosAPIClient: Found token for module: \"package_downloader\"\n[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync \"listRepositories\"\n[LogosObject] RemoteLogosObject::callMethodAsync \"listRepositories\" args: 0"
+[2026-09-24 23:05:27.567] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "listRepositories" args: 0
+LogosAPIClient: invoking remote method "package_downloader" "listRepositories" args_count: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_downloader" "listRepositories" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "listRepositories"
+[LogosObject] RemoteLogosObject::callMethod "listRepositories" args: 0
+[2026-09-24 23:05:27.706] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "listRepositories" args: 0
+LogosAPIClient: invoking remote method "package_downloader" "listRepositories" args_count: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_downloader" "listRepositories" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "listRepositories"
+[LogosObject] RemoteLogosObject::callMethod "listRepositories" args: 0
+RemoteLogosObject: callRemoteMethod failed or timed out: 1
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "listRepositories"
+[LogosObject] RemoteLogosObject::callMethodAsync "listRepositories" args: 0
+RemoteLogosObject: async callMethod timed out
+qml: sito-async-stopped {"error":"Invalid response","method":"listRepositories","module":"package_downloader"}
+[2026-09-24 23:06:13.737] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "listRepositories" args: 0
+[2026-09-24 23:06:13.737] [info] [logos] [package_downloader] ModuleProxy: callRemoteMethod "listRepositories" args: 0
+[2026-09-24 23:06:16.773] [critical] [logos] Module process crashed: package_downloader
+LogosAPIClient: invoking remote method "package_downloader" "listRepositories" args_count: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_downloader" "listRepositories" args_count: 0 timeout: 20000
+LogosAPIConsumer: cached handle for "package_downloader" went stale; re-acquiring
+[LogosObject] Destroying RemoteLogosObject 0
+RemoteTransportConnection: Requesting object: "package_downloader" at "23:06:19.775"
+RemoteTransportConnection: Timeout waiting for replica: "package_downloader"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "package_downloader"
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+RemoteTransportConnection: Requesting object: "package_downloader" at "23:06:39.701"
+RemoteTransportConnection: Timeout waiting for replica: "package_downloader"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "package_downloader"
+qml: sito-async-killed {"error":"Module source unavailable","message":"failed to acquire remote object 'package_downloader' (module not loaded, not published, or transport failure)","
+[QmlInspector] Client disconnected
+MainContainer destroyed
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:13: TypeError: Cannot read property 'launcherApps' of null
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:15: TypeError: Cannot read property 'currentActiveSectionIndex' of null
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:188: TypeError: Cannot read property 'buildVersion' of null
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:173: TypeError: Cannot read property 'currentActiveSectionIndex' of null
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:173: TypeError: Cannot read property 'currentActiveSectionIndex' of null
+qrc:/qt/qml/Basecamp/Sidebar/Basecamp/Sidebar/SidebarPanel.qml:173: TypeError: Cannot read property 'currentActiveSectionIndex' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:69: TypeError: Cannot read property 'repositories' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:70: TypeError: Cannot read property 'repositoriesLoading' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/CoreModulesView.qml:253: TypeError: Cannot read property 'modulesLoading' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/CoreModulesView.qml:236: TypeError: Cannot read property 'coreModules' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/CoreModulesView.qml:97: TypeError: Cannot read property 'coreModules' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/CoreModulesView.qml:65: TypeError: Cannot read property 'modulesLoading' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/UiModulesTab.qml:235: TypeError: Cannot read property 'modulesLoading' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/UiModulesTab.qml:225: TypeError: Cannot read property 'uiModules' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/UiModulesTab.qml:94: TypeError: Cannot read property 'uiModules' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/UiModulesTab.qml:48: TypeError: Cannot read property 'modulesLoading' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/DashboardView.qml:59: TypeError: Cannot read property 'buildCommits' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/DashboardView.qml:39: TypeError: Cannot read property 'isPortableBuild' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/DashboardView.qml:32: TypeError: Cannot read property 'buildVersion' of null
+qrc:/qt/qml/Basecamp/Settings/Basecamp/Settings/DashboardView.qml:33: TypeError: Cannot read property 'buildVersion' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:47: TypeError: Cannot read property 'uiAppsProxy' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:48: TypeError: Cannot read property 'repositories' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:49: TypeError: Cannot read property 'appsLoading' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/ContentViews.qml:42: TypeError: Cannot read property 'currentActiveSectionIndex' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:114: TypeError: Cannot read property 'requiredPackagesModel' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+qrc:/qt/qml/Basecamp/Shell/Basecamp/Shell/OverlayDialogs.qml:47: TypeError: Cannot read property 'displayNameFor' of null
+Unloading UI module: "package_manager_ui"
+ViewModuleHost: stopping process for "package_manager_ui"
+ui-host [ "package_manager_ui" ]: "ui-host: received termination signal, quitting"
+ui-host [ "package_manager_ui" ]: "[LogosObject] Destroying RemoteLogosObject 0"
+ui-host [ "package_manager_ui" ]: "[LogosObject] Destroying RemoteLogosObject 0"
+ui-host [ "package_manager_ui" ]: "[LogosObject] Destroying RemoteLogosObject 0"
+ui-host [ "package_manager_ui" ]: "[LogosObject] Destroying RemoteLogosObject 0"
+ViewModuleHost: process exited for "package_manager_ui" with code 0
+Successfully unloaded UI module: "package_manager_ui"
+[LogosObject] Destroying RemoteLogosObject 0
+MainUIPlugin destroyed

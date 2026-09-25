@@ -23,7 +23,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { printHeader } from "../dist/report/terminal.js";
+import { formatStagedLines, printHeader, printStep } from "../dist/report/terminal.js";
 import { configPath, loadConfig, saveConfig } from "../dist/config.js";
 import { assessFidelity } from "../dist/runner/fidelity.js";
 import { LogBuffer } from "../dist/logs/buffer.js";
@@ -328,4 +328,101 @@ test("a missing or unreadable config reads as empty rather than throwing", () =>
       "the readable half is kept and nothing else is carried through",
     );
   });
+});
+
+// --- the staged block ---------------------------------------------------------
+//
+// ST2: the header named the app under test and nothing it depended on, with no
+// hash, so an installed core standing in for a fresh build read exactly like
+// the build. These pin the block that replaced the `built` line.
+
+const HEX = "3f9a1c0e5b7d2a44" + "0".repeat(48);
+const record = (over = {}) => ({
+  name: "tip_jar",
+  version: "0.2.1",
+  slot: "plugins",
+  artifact: "/work/tip_jar/result-tipjar/tip_jar.lgx",
+  form: "lgx",
+  provenance: "local",
+  builtAt: Date.now() - 4 * 60_000,
+  hashes: [{ kind: "view", path: "qml/Main.qml", sha256: HEX }],
+  ...over,
+});
+const core = (over = {}) =>
+  record({
+    name: "medusa_core",
+    version: "0.5.0",
+    slot: "modules",
+    artifact: "/work/medusa/module/result/medusa_core.lgx",
+    builtAt: null,
+    hashes: [{ kind: "library", path: "medusa_core_plugin.so", sha256: "9c1e04b7aa3f5d12" + "1".repeat(48) }],
+    ...over,
+  });
+
+/** The staged block's lines, without the header's key and indent. */
+function stagedBlock(out) {
+  const lines = out.map(strip);
+  const at = lines.findIndex((l) => l.startsWith("  staged "));
+  if (at === -1) return null;
+  const body = [lines[at].slice(12)];
+  for (const l of lines.slice(at + 1)) {
+    if (!l.startsWith(" ".repeat(12))) break;
+    body.push(l.slice(12));
+  }
+  return body;
+}
+
+test("the staged block names every artifact, its provenance, its age and its hash, app first", () => {
+  const out = capture(() => printHeader(header({ staged: [record(), core()], stagingNotes: [] })));
+  const block = stagedBlock(out);
+  assert.equal(block.length, 2);
+  assert.match(block[0], /^tip_jar 0\.2\.1 +local +\/work\/tip_jar\/result-tipjar\/tip_jar\.lgx \(lgx, 4 min ago\) +view +3f9a1c0e5b7d2a44$/);
+  assert.match(block[1], /^medusa_core 0\.5\.0 +local +\/work\/medusa\/module\/result\/medusa_core\.lgx \(lgx, build time unknown\) +library 9c1e04b7aa3f5d12$/);
+  assert.equal(field(out, "built"), null, "the block replaces the built line");
+  // Columns line up, so a hash is read against the right artifact.
+  assert.equal(block[0].indexOf("local"), block[1].indexOf("local"));
+  assert.equal(block[0].indexOf("view"), block[1].indexOf("library"));
+  assert.equal(block[0].lastIndexOf(" "), block[1].lastIndexOf(" "));
+});
+
+test("an unknown build time says so, and never counts days from 1970", () => {
+  for (const builtAt of [null, 0, 1, 86_399_999]) {
+    const [line] = formatStagedLines([core({ builtAt })], [], false);
+    assert.match(line, /build time unknown/, `builtAt ${builtAt}: ${line}`);
+    assert.doesNotMatch(line, /days ago|min ago|h ago/);
+  }
+});
+
+test("a note sits under the line it is about, dimmed only when colour is on", () => {
+  const notes = [
+    "medusa_core: passed over the local 0.4.0 at ../medusa/module/result/medusa_core.lgx, for a lower version than the installed 0.5.0 staged",
+    "tip_jar: passed over dist/tip_jar.lgx (local, same version): the two could not be ordered by build time, so the copy found first was kept",
+  ];
+  const plain = formatStagedLines([record(), core({ provenance: "installed" })], notes, false);
+  assert.equal(plain.length, 4);
+  assert.match(plain[0], /^tip_jar /);
+  assert.equal(plain[1], "  ^ passed over dist/tip_jar.lgx (local, same version): the two could not be ordered by build time, so the copy found first was kept");
+  assert.match(plain[2], /^medusa_core 0\.5\.0 +installed /);
+  assert.equal(plain[3], "  ^ passed over the local 0.4.0 at ../medusa/module/result/medusa_core.lgx, for a lower version than the installed 0.5.0 staged");
+  const coloured = formatStagedLines([record(), core()], notes, true);
+  assert.ok(coloured[1].includes("\x1b[2m"), "the note is dim");
+  assert.ok(!coloured[0].includes("\x1b["), "the record line itself is not painted");
+});
+
+test("attach mode says nothing was staged, and prints no hash", () => {
+  const out = capture(() => printHeader(header({ staged: [], attached: true })));
+  assert.equal(field(out, "staged"), "nothing (attached to a Basecamp this run did not start)");
+  assert.doesNotMatch(strip(out.join("\n")), /[0-9a-f]{16}/);
+});
+
+test("a step's app is printed under it only when asked for", () => {
+  const s = { index: 0, name: "approve", action: "approve", verdict: "pass", durationMs: 10, checks: [], callsObserved: [], app: "medusa_ui" };
+  const shown = capture(() => printStep(s, { showApp: true })).map(strip);
+  assert.equal(shown[1], "        in medusa_ui");
+  const hidden = capture(() => printStep(s)).map(strip);
+  assert.equal(hidden.length, 1, "a single-app run prints exactly what it always did");
+  // A check aimed elsewhere carries its app in its description.
+  const check = { kind: "state", description: 'state "connectSheet.visible" in medusa_ui', verdict: "pass", in: "medusa_ui" };
+  const withCheck = capture(() => printStep({ ...s, checks: [check] })).map(strip);
+  assert.ok(withCheck.some((l) => l.includes('state "connectSheet.visible" in medusa_ui')));
 });

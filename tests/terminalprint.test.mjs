@@ -17,6 +17,9 @@
 //     duration column left; measuring the escape codes would misalign it.
 //   * the `calls:` line is suppressed when a check already reported the calls,
 //     so the same evidence is not printed under the step twice.
+//   * a step's `comment:` prints as the author's own words, marked `#` and kept
+//     above the action: it is intent, not something this run measured, and it
+//     must not wear one of the verdict marks or sit among the checks.
 //   * `fail()` writes to stderr. `inspect --json` promises stdout carries only
 //     the payload, and an error printed on stdout breaks that for whoever is
 //     piping it.
@@ -42,7 +45,7 @@ try {
   if (realNoColour === undefined) delete process.env.NO_COLOR;
   else process.env.NO_COLOR = realNoColour;
 }
-const { printBanner, printHeader, printStep, printSummary, note, warn, fail } = terminal;
+const { printBanner, printHeader, printStep, printSummary, note, warn, fail, wrapText } = terminal;
 
 const RESET = "\x1b[0m";
 const DIM = "\x1b[2m";
@@ -165,6 +168,47 @@ test("the action line appears only when it says something the name did not", () 
 
   const unnamed = capture(() => printStep(step({ name: "click Send", action: "" })));
   assert.equal(unnamed.out.length, 1, "and a step with no action at all prints no empty line for it");
+});
+
+test("a step's comment prints above the action, marked as the author's words", () => {
+  // `comment:` reached no report at all until it was carried into StepResult:
+  // parsed, allowlisted, and read only by breakpoint detection. It is AUTHORED
+  // prose, so it sits next to the name, above what the tool did, and wears a
+  // `#` rather than one of the verdict marks — a reader must never take it for
+  // something this run measured.
+  const { out } = capture(() =>
+    printStep(step({ name: "send a tip", action: "click Send", comment: "the ledger must not move until the tip settles" })),
+  );
+  assert.deepEqual(out, [
+    `  ${GREEN}PASS${RESET}  send a tip${" ".repeat(32)}${DIM}120ms${RESET}`,
+    `        ${DIM}# the ledger must not move until the tip settles${RESET}`,
+    `        ${DIM}click Send${RESET}`,
+  ]);
+
+  // One console.log per line, for the reason `error` does the same: everything
+  // here is indented eight columns and a raw newline leaves the next line hard
+  // against the margin.
+  const wrapped = capture(() => printStep(step({ comment: "first line\nsecond line" })));
+  assert.deepEqual(wrapped.out.slice(1), [
+    `        ${DIM}# first line${RESET}`,
+    `        ${DIM}# second line${RESET}`,
+  ]);
+
+  const withCheck = capture(() =>
+    printStep(step({ comment: "the ledger must not move", checks: [check({ verdict: "pass" })] })),
+  );
+  assert.deepEqual(
+    withCheck.out.map(strip),
+    [
+      `  PASS  click Send${" ".repeat(32)}120ms`,
+      "        # the ledger must not move",
+      '        + shows "Sent"',
+    ],
+    "no + x or ?, and above the checks rather than among them",
+  );
+
+  const none = capture(() => printStep(step()));
+  assert.equal(none.out.length, 1, "and a step whose author wrote nothing prints no empty comment line");
 });
 
 test("the calls line is printed by the check when there was one, and by the step otherwise", () => {
@@ -354,13 +398,15 @@ const age = (builtAt) =>
     .replace(/^.*, /, "")
     .replace(/\)$/, "");
 
-test("an epoch-normalised build reads as from the nix store, not as twenty thousand days old", () => {
+test("an epoch-normalised build reads as build time unknown, not as twenty thousand days old", () => {
   // Nix sets every file in the store to 1970-01-01, so the arithmetic below is
   // meaningless for a store path and produced a number that grew by one a day
-  // while the build itself was minutes old.
-  assert.equal(age(1), "from the nix store");
-  assert.equal(age(86_399_999), "from the nix store", "anything inside the first day after the epoch is the store, not a build");
-  assert.equal(age(0), "unknown age", "and a timestamp we never learned says so rather than dating the build to 1970");
+  // while the build itself was minutes old. It used to say "from the nix
+  // store", and `doctor` said "built 29 million min ago"; every place now says
+  // the same thing, which is the only true one.
+  assert.equal(age(1), "build time unknown");
+  assert.equal(age(86_399_999), "build time unknown", "anything inside the first day after the epoch is the store, not a build");
+  assert.equal(age(0), "build time unknown", "and a timestamp we never learned says so rather than dating the build to 1970");
 });
 
 test("build age is coarse on purpose: seconds, then minutes, then hours, then days", () => {
@@ -385,7 +431,7 @@ test("the built line names the version when the manifest had one, and omits it w
   );
   assert.equal(
     field(withVersion.out, "built"),
-    "/nix/store/abc-tip_jar/lib/tip_jar (v1.2.0, lgx, from the nix store)",
+    "/nix/store/abc-tip_jar/lib/tip_jar (v1.2.0, lgx, build time unknown)",
     "which copy was tested, in what form, and how old — the whole 'is this my latest build?' question",
   );
 
@@ -433,4 +479,13 @@ test("a remedy is wrapped at seventy-four columns without breaking a word", () =
       `line ${i + 1} broke early: "${next}" would still have fitted, so the text is ragged for no reason`,
     );
   }
+});
+
+test("wrapText is the same word-wrap printHeader's remedy uses, exported for smoke's own remedy prose", () => {
+  // printHeader wraps its remedy through the module-private `wrap`; wrapText
+  // is the identical wrap exposed for commands/smoke.ts's VIEW_HOST_REMEDY,
+  // which prints outside any header. Same word-wrap, a different caller.
+  const words = "one two three four five six seven eight nine ten";
+  assert.deepEqual(wrapText(words, 13), ["one two three", "four five six", "seven eight", "nine ten"]);
+  assert.deepEqual(wrapText("", 10), [], "nothing to wrap is no lines at all");
 });

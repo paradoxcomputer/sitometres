@@ -19,6 +19,7 @@ import fs from "node:fs";
 import { type InspectorClient, sleep } from "../inspector/client.js";
 import type { TreeNode } from "../inspector/protocol.js";
 import { status } from "../report/status.js";
+import { DEFAULT_OPEN_SETTLE_MS, DEFAULT_OPEN_TIMEOUT_MS, describeSeconds } from "../timeouts.js";
 
 export interface AppScope {
   /** The QDockWidget. Present whenever the app opened at all. */
@@ -30,54 +31,146 @@ export interface AppScope {
   scopeId: string;
 }
 
-/** How long to keep trying the real click before falling back to the API. */
+/**
+ * How long to keep trying the real click before falling back to the API, at
+ * most. A third of the open budget when that is less, so however short a
+ * budget someone chose, the launcher fallback still gets a turn.
+ */
 const CLICK_WINDOW_MS = 15_000;
 
 /**
- * The least time opening an app is ever given.
+ * The least time an open is given when nobody chose its budget.
  *
- * Must exceed CLICK_WINDOW_MS, or the launcher-API fallback is unreachable.
+ * Only the default and the startup --timeout, which reaches the open for
+ * compatibility, are floored. A budget written for the open itself (its step's
+ * `timeout:`, `open_timeout:`, --open-timeout) is honoured exactly: that is
+ * the author saying how long this app may take.
  */
 const MIN_OPEN_MS = 45_000;
 
+/** The click window for an open budget: see CLICK_WINDOW_MS. */
+export function clickWindowFor(budgetMs: number): number {
+  return Math.min(CLICK_WINDOW_MS, budgetMs / 3);
+}
+
+/** How an app is opened: the budget, and whether someone chose it. */
+export interface OpenOptions {
+  /** Total budget for the open. Infinity means no deadline. */
+  timeoutMs?: number;
+  /**
+   * True when `timeoutMs` was chosen for this open, and is honoured as given.
+   * Otherwise it is a fallback and never goes below MIN_OPEN_MS.
+   */
+  explicit?: boolean;
+  /** The pause for the first paint once the dock exists. Default 1.2 s. */
+  settleMs?: number;
+  stagedAt?: string;
+  view?: string;
+}
+
 /** How often to re-ask Basecamp for its plugin list while it stays empty. */
 const REFRESH_EVERY_MS = 10_000;
+
+/**
+ * One app as Basecamp's launcher describes it. 0.3.0 adds whether its
+ * dependencies block it: `depBlockKind` is Basecamp's own summary ("absent",
+ * "mismatch", "signer" or "mixed"), empty when nothing blocks it.
+ */
+export interface LauncherApp {
+  name: string;
+  hasMissingDeps?: boolean;
+  depBlockKind?: string;
+}
 
 /**
  * The apps Basecamp's launcher currently knows about, or null if we could not
  * ask (no sidebar QML yet). Distinguishes "your app is missing" from "the
  * sidebar has not finished loading".
  */
-async function launcherApps(inspector: InspectorClient): Promise<string[] | null> {
+async function launcherApps(inspector: InspectorClient): Promise<LauncherApp[] | null> {
   const sidebar = (await inspector.findByType("SidebarPanel").catch(() => null))?.matches?.[0];
   if (!sidebar) return null;
   try {
     const res = await inspector.evaluate("JSON.stringify(backend.launcherApps)", sidebar.id);
     const parsed = JSON.parse(String(res.result ?? "[]")) as Array<Record<string, unknown>>;
-    return parsed.map((a) => String(a.name ?? a.moduleName ?? "")).filter(Boolean);
+    const out: LauncherApp[] = [];
+    for (const a of parsed) {
+      const name = String(a.name ?? a.moduleName ?? "");
+      if (!name) continue;
+      const row: LauncherApp = { name };
+      if (typeof a.hasMissingDeps === "boolean") row.hasMissingDeps = a.hasMissingDeps;
+      if (typeof a.depBlockKind === "string" && a.depBlockKind.length > 0) row.depBlockKind = a.depBlockKind;
+      out.push(row);
+    }
+    return out;
   } catch {
     return null;
   }
 }
 
 /**
+ * What 0.3.0's launcher says about an app its dependencies block, or "".
+ *
+ * Basecamp 0.3.0 checks an app's core dependencies before it loads it, and
+ * shows a popup instead of the app when one is missing or outside the
+ * declared range, so no dock ever appears. 0.2.2 has no such gate and its
+ * launcher rows carry neither field, so this is always "" there.
+ */
+export function describeDependencyBlock(row: LauncherApp | undefined): string {
+  if (!row || (row.hasMissingDeps !== true && row.depBlockKind === undefined)) return "";
+  const kind: Record<string, string> = {
+    absent: "a dependency it declares is not installed",
+    missing: "a dependency it declares is not installed",
+    mismatch: "a dependency it declares is installed at a version outside the declared range",
+    signer: "a dependency it declares is signed by someone other than the declared signer",
+    mixed: "several of its dependencies are missing or at the wrong version",
+  };
+  const what = (row.depBlockKind && kind[row.depBlockKind]) ?? "its dependencies are missing or mismatched";
+  return (
+    `Basecamp's launcher marks ${row.name} as blocked: ${what}` +
+    `${row.depBlockKind ? ` (depBlockKind "${row.depBlockKind}")` : ""}. Basecamp 0.3.0 shows a popup ` +
+    `instead of opening an app like that. Stage the dependency with --with <name>, at a version the ` +
+    `manifest accepts. `
+  );
+}
+
+/**
  * Ask Basecamp to re-run its plugin-metadata fetch.
  *
  * The launcher is filled by an async chain through package_manager and
- * package_downloader. When one of those calls times out — a getCatalog that
- * cannot reach the network is the usual culprit — the chain is NOT retried,
+ * package_downloader. When one of those calls times out (a getCatalog that
+ * cannot reach the network is the usual culprit) the chain is NOT retried,
  * and the sidebar sits on "Loading Package Manager…" forever. Nothing will
  * change unless something asks again, so we ask.
  *
- * `refreshUiModules` takes no arguments, which is why callMethod can reach it:
- * the inspector marshals every argument as Q_ARG(QVariant, …) and would fail
- * on a typed parameter.
+ * Through the sidebar's `backend` context property first, the same way the
+ * launcher itself is reached: 0.3.0 creates its MainUIBackend without a
+ * parent (app/window.cpp), so it is not in the inspector's object tree at all
+ * and a findByType for it finds nothing. Both builds expose the two slots on
+ * `backend`. The MainUIBackend object is the fallback, for a build whose
+ * sidebar is not up yet; `refreshUiModules` takes no arguments, which is why
+ * callMethod can reach it there (the inspector marshals every argument as
+ * Q_ARG(QVariant, …) and would fail on a typed parameter).
  */
 async function retryMetadataFetch(inspector: InspectorClient): Promise<boolean> {
+  const slots = ["refreshUiModules", "refreshRepositories"];
+  const sidebar = (await inspector.findByType("SidebarPanel").catch(() => null))?.matches?.[0];
+  if (sidebar) {
+    let asked = false;
+    for (const slot of slots) {
+      try {
+        await inspector.evaluate(`backend.${slot}(), 1`, sidebar.id);
+        asked = true;
+      } catch {
+        /* a slot missing on this build is not fatal */
+      }
+    }
+    if (asked) return true;
+  }
   const backend = (await inspector.findByType("MainUIBackend").catch(() => null))?.matches?.[0];
   if (!backend) return false;
   let asked = false;
-  for (const slot of ["refreshUiModules", "refreshRepositories"]) {
+  for (const slot of slots) {
     try {
       await inspector.callMethod(backend.id, slot, []);
       asked = true;
@@ -86,6 +179,30 @@ async function retryMetadataFetch(inspector: InspectorClient): Promise<boolean> 
     }
   }
   return asked;
+}
+
+/**
+ * Click an app's sidebar entry by its objectName, when the build gives it one.
+ *
+ * 0.3.0 names each launcher delegate `sidebar.app.<module>`, which cannot be
+ * confused with another app that happens to share a display name, or with
+ * the same words elsewhere in the window. 0.2.2 has no such objectName, so a
+ * miss here is normal and the caller falls back to the label.
+ */
+async function clickSidebarEntry(inspector: InspectorClient, moduleName: string): Promise<boolean> {
+  let id: string | undefined;
+  try {
+    id = (await inspector.findByProperty("objectName", `sidebar.app.${moduleName}`))?.matches?.[0]?.id;
+  } catch {
+    return false;
+  }
+  if (!id) return false;
+  try {
+    await inspector.clickRef(String(id));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -142,15 +259,21 @@ function escapeRe(s: string): string {
  * the spec runner passed only a timeout. So the same failure produced a
  * different diagnosis depending on which command hit it, and --timeout was
  * honoured by some and ignored by others.
+ *
+ * `budget` is the open's time budget and whether someone chose it for the
+ * open; see openBudgetFrom in ../timeouts.ts and Runner.openBudget.
  */
 export function openOptionsFor(
   app: { manifest: { view?: string }; slot: string } | null,
   userDirRoot: string | undefined,
   appName: string,
-  timeoutMs?: number,
-): { timeoutMs?: number; stagedAt?: string; view?: string } {
-  const out: { timeoutMs?: number; stagedAt?: string; view?: string } = {};
-  if (timeoutMs !== undefined) out.timeoutMs = timeoutMs;
+  budget: { timeoutMs?: number; explicit?: boolean } = {},
+): OpenOptions {
+  const out: OpenOptions = {};
+  if (budget.timeoutMs !== undefined) {
+    out.timeoutMs = budget.timeoutMs;
+    if (budget.explicit) out.explicit = true;
+  }
   if (userDirRoot && app) out.stagedAt = `${userDirRoot}/${app.slot}/${appName}`;
   if (app?.manifest.view) out.view = app.manifest.view;
   return out;
@@ -175,15 +298,20 @@ export async function openApp(
   inspector: InspectorClient,
   moduleName: string,
   label: string,
-  opts: { timeoutMs?: number; settleMs?: number; stagedAt?: string; view?: string } = {},
+  opts: OpenOptions = {},
 ): Promise<AppScope> {
-  // A floor, not just a default. A spec step's timeout used to be passed
-  // straight through, and `init` writes `timeout: 15s` — which is exactly the
-  // click window below, so the launcher-API fallback never got a single turn
-  // and the generated spec could not pass its own first step at any setting.
-  // Opening an app is not the step's work; it is what has to happen before the
-  // step can be attempted at all.
-  const timeoutMs = Math.max(opts.timeoutMs ?? 120_000, MIN_OPEN_MS);
+  // A floor for a budget nobody chose for the open. A spec's step timeout used
+  // to be passed straight through, and `init` writes `timeout: 15s`, which was
+  // exactly the click window below, so the launcher-API fallback never got a
+  // single turn and the generated spec could not pass its own first step at
+  // any setting. Opening an app is not the step's work, so a spec-level
+  // `timeout:` never reaches here at all. A budget written for the open is
+  // honoured as given, and the click window shrinks with it instead.
+  const timeoutMs = opts.explicit && opts.timeoutMs !== undefined
+    ? opts.timeoutMs
+    : Math.max(opts.timeoutMs ?? DEFAULT_OPEN_TIMEOUT_MS, MIN_OPEN_MS);
+  // Every wait below is a Date.now() comparison, not a timer, so "none"
+  // (Infinity) simply never expires.
   const deadline = Date.now() + timeoutMs;
 
   // The sidebar is populated asynchronously — Basecamp is still awaiting
@@ -207,31 +335,48 @@ export async function openApp(
   let via: "click" | "backend" = "click";
   let lastError = "";
 
-  const clickDeadline = Math.min(deadline, Date.now() + CLICK_WINDOW_MS);
-  while (Date.now() < clickDeadline) {
+  /**
+   * One attempt at the real click: the objectName 0.3.0 gives the delegate,
+   * then each name the delegate might show. True when one landed.
+   */
+  const tryClick = async (): Promise<boolean> => {
+    if (typeof (inspector as Partial<InspectorClient>).clickRef === "function" && (await clickSidebarEntry(inspector, moduleName))) {
+      return true;
+    }
     for (const name of names) {
       try {
         await inspector.findAndClick(name);
-        clicked = true;
-        break;
+        return true;
       } catch (err) {
         lastError = (err as Error).message;
       }
     }
-    if (clicked) break;
+    return false;
+  };
+
+  const clickDeadline = Math.min(deadline, Date.now() + clickWindowFor(timeoutMs));
+  while (Date.now() < clickDeadline) {
+    if (await tryClick()) {
+      clicked = true;
+      break;
+    }
     await sleep(250);
   }
 
   let refreshes = 0;
   let askedLauncher = false;
   let nextRefreshAt = Date.now();
+  /** What the launcher said the last time it answered; null while it never has. */
+  let lastLauncher: LauncherApp[] | null = null;
   while (!clicked && Date.now() < deadline) {
     // Ask Basecamp directly whether it knows the app, and open it if so.
     // `backend` is a context property of the sidebar's QML, so an expression
     // evaluated against SidebarPanel can reach it.
     status.set("Running", `sidebar has not rendered "${label}" — asking Basecamp`);
     askedLauncher = true;
-    const registered = await launcherApps(inspector);
+    const rows = await launcherApps(inspector);
+    if (rows !== null) lastLauncher = rows;
+    const registered = rows?.map((r) => r.name) ?? null;
 
     // An EMPTY launcher is not evidence of absence: the plugin list arrives
     // asynchronously and is empty for the whole of startup. Only a populated
@@ -258,21 +403,21 @@ export async function openApp(
     }
 
     // Keep trying the click too; whichever wins is fine.
-    for (const name of names) {
-      try {
-        await inspector.findAndClick(name);
-        clicked = true;
-        break;
-      } catch (err) {
-        lastError = (err as Error).message;
-      }
-    }
+    if (await tryClick()) clicked = true;
     if (!clicked) await sleep(500);
   }
 
   if (!clicked) {
     const visible = await inspector.textInventory().catch(() => []);
     const nearby = visible.map((v) => v.text).filter((t) => t.length > 0 && t.length < 40).slice(0, 12);
+    // "Never finished populating" is what the launcher itself says: asked, and
+    // empty every time. The "Loading Package Manager" label is not evidence of
+    // it, since that placeholder page is in the tree on every build whether the
+    // launcher filled or not. Only when the launcher could not be asked at all
+    // does the label still count, as the best evidence there is.
+    const neverPopulated = lastLauncher !== null
+      ? lastLauncher.length === 0
+      : nearby.some((n) => /Loading .*Package Manager/i.test(n));
     throw new OpenError(
       `could not open "${moduleName}"`,
       // Only the steps that actually ran. Claiming the launcher was asked when
@@ -283,9 +428,10 @@ export async function openApp(
         (askedLauncher
           ? `, asking Basecamp's launcher directly, and prodding it to refresh ${refreshes} time(s)`
           : "") +
-        ` over ${Math.round(timeoutMs / 1000)}s. ` +
+        ` over ${describeSeconds(timeoutMs)}. ` +
         describeStagedState(opts.stagedAt) +
-        (nearby.some((n) => /Loading .*Package Manager/i.test(n))
+        describeDependencyBlock(lastLauncher?.find((r) => r.name === moduleName)) +
+        (neverPopulated
           ? `Basecamp's sidebar is still on "Loading Package Manager…", i.e. its launcher never finished populating. ` +
             `That chain runs through package_manager and package_downloader; a getCatalog that cannot reach the ` +
             `network is the usual cause, and it is not retried on its own. `
@@ -308,25 +454,56 @@ export async function openApp(
     await sleep(200);
   }
   if (!dockId) {
+    // 0.3.0 answers a click on an app its dependencies block with a popup
+    // instead of a dock, and its launcher row says so. One question, asked
+    // only now that the open has failed; 0.2.2's rows carry no such field.
+    const blocked = describeDependencyBlock((await launcherApps(inspector).catch(() => null))?.find((r) => r.name === moduleName));
     throw new OpenError(
-      `"${moduleName}" did not open within ${Math.round(timeoutMs / 1000)}s`,
+      `"${moduleName}" did not open within ${describeSeconds(timeoutMs)}`,
       `Opened via ${via === "click" ? `a click on "${label}"` : "Basecamp's launcher API"}, ` +
         `but no dock with objectName "${moduleName}" ever appeared. ` +
-        `A heavyweight module can be slow to start — raise --timeout if it just needs longer.`,
+        (blocked ||
+          `A heavyweight module can be slow to start. If it just needs longer, raise the open's budget: ` +
+            `\`timeout:\` on the \`open:\` step, \`open_timeout:\` in the spec, or --open-timeout.`),
     );
   }
 
   status.set("Running", `${moduleName} opened — letting the first paint settle`);
-  await sleep(opts.settleMs ?? 1200);
+  await sleep(opts.settleMs ?? DEFAULT_OPEN_SETTLE_MS);
 
-  const { tree } = await inspector.getTree({ objectId: dockId, depth: 10 });
-  const qmlRootId = findQmlRoot(tree, opts.view);
+  return (await locateScope(inspector, moduleName, opts.view, dockId))!;
+}
+
+/**
+ * Find an already-open app's dock, root and selector scope.
+ *
+ * The tail of openApp, on its own so a scope can be found again without
+ * clicking anything: a spec that evaluates in another app's root holds that
+ * root's id from when the app was opened, and if the app's QML reloaded since,
+ * the id is stale. Null when no dock carries the module's name.
+ *
+ * `dockId` skips the lookup when the caller has just found the dock itself.
+ */
+export async function locateScope(
+  inspector: InspectorClient,
+  moduleName: string,
+  view?: string,
+  dockId?: string,
+): Promise<AppScope | null> {
+  let dock = dockId ?? null;
+  if (!dock) {
+    const found = await inspector.findByProperty("objectName", moduleName);
+    dock = found.matches?.[0]?.id ?? null;
+  }
+  if (!dock) return null;
+  const { tree } = await inspector.getTree({ objectId: dock, depth: 10 });
+  const qmlRootId = findQmlRoot(tree, view);
   const quickWidgetId = findFirst(tree, (n) => String(n.type ?? "").includes("QQuickWidget"));
 
   return {
-    dockId,
+    dockId: dock,
     qmlRootId,
-    scopeId: qmlRootId ?? quickWidgetId ?? dockId,
+    scopeId: qmlRootId ?? quickWidgetId ?? dock,
   };
 }
 

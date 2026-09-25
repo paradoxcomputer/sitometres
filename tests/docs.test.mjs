@@ -24,12 +24,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
+import YAML from "yaml";
 
 import { parseArgs, ArgError, KNOWN_VERBS } from "../dist/cli.js";
 import { classifyOutcome, describeOutcome } from "../dist/runner/outcome.js";
 import { printReport } from "../dist/report/runreport.js";
 import { LogBuffer } from "../dist/logs/buffer.js";
 import { parseLine } from "../dist/logs/classify.js";
+import { validateSpec, asArray } from "../dist/spec/schema.js";
+import { profilesDir } from "../dist/runner/setup.js";
+import { toSelector } from "../dist/runner/selector.js";
 
 const read = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
 const README = read("README.md");
@@ -407,7 +412,9 @@ test("a flag filed under a per-command heading is accepted by the commands it na
         // stored and was then discarded, so the spec ran past the step the user
         // asked to stop at — and the help text says "Requires --debug". Probing
         // it bare would assert the opposite of what the line documents.
-        const companion = /requires --debug/i.test(entryFor(section.body, flag)) ? ["--debug"] : [];
+        // doctor's startup budgets likewise say "Requires --deep".
+        const needs = /requires (--debug|--deep)/i.exec(entryFor(section.body, flag));
+        const companion = needs ? [needs[1]] : [];
         assert.ok(
           accepts(verb, flag, companion),
           `${flag} is filed under ${heading} but \`${verb}\` rejects it`,
@@ -493,4 +500,188 @@ test("--strict is documented in README.md and in SKILL.md, and is the gate they 
   assert.equal(crawlExitCode({ ...gate }), 0, "the default really does let a run that proved nothing through");
   assert.equal(crawlExitCode({ ...gate, strict: true }), 1, "and --strict really is what closes it");
   assert.equal(crawlProvedNothing([{ outcome: "nothing", calls: [] }]), true);
+});
+
+// ---------------------------------------------------------------------------
+// The examples are documentation too, and one of them documented a command that
+// could not pass: `npx sitometres run examples/medusa_wallet.yaml` on a spec
+// whose `app:` is medusa_ui, so findSetupSpec falls back to
+// profiles/medusa_ui.yaml and openApp runs it to the end before step 1 polls.
+// That profile creates AND unlocks the wallet and signs off on
+// `not_text: ["Unlock", "Create your wallet"]` — the exact label step 1 then
+// asks to see. The example existed to demonstrate onboarding, and the profile
+// drove onboarding past it first.
+// ---------------------------------------------------------------------------
+
+/** Every example, unparsed. Each test below says for itself what it needs. */
+const EXAMPLES = fs
+  .readdirSync(new URL("../examples/", import.meta.url))
+  .filter((f) => f.endsWith(".yaml"))
+  .map((name) => ({ name, text: read(`examples/${name}`) }));
+
+/**
+ * The command an example's header tells you to type, as argv.
+ *
+ * Written as `npx sitometres run …`, `sitometres run …` or `Run with:
+ * sitometres run …`, so take everything from the verb on and hand it to the
+ * real parser rather than eyeballing the flags.
+ */
+function documentedRun(text) {
+  const m = /(?:^|\s)sitometres\s+run\s+(.+?)\s*$/m.exec(text);
+  return m ? ["run", ...m[1].split(/\s+/)] : null;
+}
+
+/** What a step asserts is on screen, and off it — `expect:` and `wait_for:` alike. */
+const onScreen = (step) =>
+  [...asArray(step.expect?.text), ...asArray(step.waitFor?.text)].map((s) => toSelector(s).text);
+const offScreen = (step) =>
+  [...asArray(step.expect?.notText), ...asArray(step.waitFor?.notText)].map((s) => toSelector(s).text);
+
+test("every example is a spec the tool would accept", () => {
+  // spec.test.mjs holds every shipped profile to the schema and nothing held
+  // the examples to it, though they are the first spec anyone copies.
+  assert.ok(EXAMPLES.length >= 4, `only ${EXAMPLES.length} examples found; the scrape has drifted`);
+  for (const { name, text } of EXAMPLES) {
+    const spec = validateSpec(YAML.parse(text));
+    assert.ok(spec.steps.length > 0, `examples/${name} has no steps`);
+  }
+});
+
+test("the command an example documents is one the CLI accepts, and runs that example", () => {
+  // The path in the header is typed by hand and nothing ever followed it, so a
+  // renamed example keeps the old name in its own instructions.
+  for (const { name, text } of EXAMPLES) {
+    const argv = documentedRun(text);
+    assert.ok(argv, `examples/${name} never shows how to run it`);
+    const args = parseArgs(argv);
+    assert.equal(args.verb, "run");
+    assert.equal(path.basename(args.command ?? ""), name,
+      `examples/${name} documents a command that runs ${args.command}`);
+  }
+});
+
+test("an example that re-drives its app's setup profile documents --no-setup", () => {
+  // The profile finishes inside openApp, before step 1 polls. So whatever it
+  // last proved is GONE is gone when the spec takes over — walk it in order,
+  // since a later step asserting a label present takes it back off that list
+  // (the medusa profile forbids "Unlock", then waits for it, then forbids it).
+  let collided = 0;
+  for (const { name, text } of EXAMPLES) {
+    const spec = validateSpec(YAML.parse(text));
+    const argv = documentedRun(text);
+    const profile = path.join(profilesDir(), `${spec.app}.yaml`);
+    if (!argv || !spec.app || !fs.existsSync(profile)) continue;
+
+    const absent = new Set();
+    for (const step of validateSpec(YAML.parse(fs.readFileSync(profile, "utf8"))).steps) {
+      for (const t of onScreen(step)) absent.delete(t);
+      for (const t of offScreen(step)) absent.add(t);
+    }
+    const clash = onScreen(spec.steps[0]).filter((t) => absent.has(t));
+    if (!clash.length) continue;
+    collided++;
+    assert.ok(parseArgs(argv).flags.has("no-setup"),
+      `examples/${name} step 1 expects "${clash[0]}", which profiles/${spec.app}.yaml ` +
+      `has just proved is gone. Add --no-setup to the command it documents.`);
+  }
+  // A green run here must mean the pairing was found, not that nothing was.
+  assert.ok(collided >= 1,
+    "no example was found re-driving a profile, so this test proved nothing; " +
+    "if examples/medusa_wallet.yaml stopped driving onboarding, retarget it");
+});
+
+// ---------------------------------------------------------------------------
+// Which build gets tested, and specs that cross apps. Both are documented in
+// README and SKILL, and a sample `staged` block in the README is only worth
+// printing if it is what the code prints.
+// ---------------------------------------------------------------------------
+
+test("README and SKILL both document `in:` and the local-over-installed rule", () => {
+  for (const [name, doc] of [["README.md", README], ["SKILL.md", SKILL]]) {
+    assert.match(doc, /\{ expr[^}]*in: /, `${name} shows the { expr, in } form`);
+    assert.match(doc, /A local build beats an installed copy of the same version/i, `${name} states the rule`);
+    assert.match(doc, /HIGHER|higher version/, `${name} states the version exception`);
+    assert.match(doc, /build time unknown/, `${name} says what an unknown time looks like`);
+    assert.match(doc, /examples\/tip_jar_connect\.yaml/, `${name} points at the worked example`);
+    assert.match(doc, /[Ss]electors (do not|never) cross apps/, `${name} states the limit as plainly as the feature`);
+  }
+  assert.match(README, /## Which build gets tested/);
+  assert.match(README.replace(/\s+/g, " "), /identifies a build; it does not vouch for one/);
+});
+
+test("every yaml block in the docs that uses `in:` is a spec the tool would accept", () => {
+  let seen = 0;
+  for (const [name, doc] of [["README.md", README], ["SKILL.md", SKILL]]) {
+    for (const m of doc.matchAll(/```yaml\n([\s\S]*?)\n```/g)) {
+      if (!/\bin: /.test(m[1])) continue;
+      seen++;
+      const parsed = YAML.parse(m[1]);
+      const doc = Array.isArray(parsed) ? { steps: parsed } : parsed;
+      assert.doesNotThrow(() => validateSpec(doc), `${name}:\n${m[1]}`);
+      const spec = validateSpec(doc);
+      const forms = spec.steps.flatMap((s) => [
+        ...(typeof s.eval === "object" ? [s.eval] : []),
+        ...asArray(s.expect?.state), ...asArray(s.waitFor?.state),
+      ]).filter((x) => typeof x === "object");
+      assert.ok(forms.length > 0, `${name}: the block mentions in: but carries no object form`);
+    }
+  }
+  assert.ok(seen >= 1, "no documented yaml block uses `in:`; the scrape has drifted");
+});
+
+test("the cross-app example ignores every background poll the wallet and the dApp run (PLB-3)", () => {
+  // The example asserts `calls_succeed:` on the connect and approve steps, and
+  // the wallet it opens polls its core on timers of its own: every 10s for its
+  // status, sequencer, accounts, wallet and lock state, and on other timers for
+  // tokens, history and a private sync. Only four polls were listed, so any of
+  // the others failing inside one of those windows was blamed on the click.
+  // Read from the wallet's Main.qml; the live run (task 7.5) is the proof.
+  const spec = validateSpec(YAML.parse(read("examples/tip_jar_connect.yaml")));
+  const ignored = new Set(spec.ignoreCalls ?? []);
+  const polls = [
+    "pendingRequests", "actionStatus", "getJob", "getZones",
+    "getStatus", "getSequencerStatus", "getTorProgress", "listAccounts", "getSecurityState",
+    "getWalletState", "getTokens", "getTransactions", "syncPrivateStatus",
+  ];
+  const missing = polls.filter((p) => !ignored.has(`medusa_core.${p}`));
+  assert.deepEqual(missing, [], "each is a background poll, not anything a click caused");
+  // And none of them is a call the example asserts: ignoring one would hide it.
+  const asserted = spec.steps.flatMap((s) => [...(s.expect?.calls ?? []), ...(s.waitFor?.calls ?? [])]);
+  for (const c of asserted) assert.ok(!ignored.has(c), `${c} is asserted and must not be ignored`);
+  assert.deepEqual(asserted, ["medusa_core.connectRequest", "medusa_core.approveConnect"]);
+});
+
+test("the README's sample staged lines are what the header prints", async () => {
+  const { formatStagedLines } = await import("../dist/report/terminal.js");
+  // Every `staged` block anywhere in the README, with its continuation lines.
+  const all = README.split("\n");
+  const blocks = [];
+  all.forEach((line, i) => {
+    if (!line.startsWith("  staged    ")) return;
+    const out = [line.slice(12)];
+    for (const l of all.slice(i + 1)) {
+      if (!/^ {12}\S/.test(l)) break;
+      out.push(l.slice(12));
+    }
+    blocks.push(out);
+  });
+  assert.ok(blocks.length >= 2, "the sample run and the section on staging both show a staged block");
+  const agoMs = (s) => {
+    const m = /^(\d+) (min|h|days) ago$/.exec(s);
+    if (!m) return null;
+    return Date.now() - Number(m[1]) * { min: 60_000, h: 3_600_000, days: 86_400_000 }[m[2]];
+  };
+  for (const lines of blocks) {
+    const records = lines.map((l) => {
+      const m = /^(\S+) (\S+) +(local|installed) +(.+?) \((dir|lgx), (.+?)\) +(view|library) +([0-9a-f]{16})$/.exec(l);
+      assert.ok(m, `not a staged line: ${JSON.stringify(l)}`);
+      const where = m[4].startsWith("~") ? path.join(process.env.HOME ?? "", m[4].slice(1)) : path.resolve(m[4]);
+      return {
+        name: m[1], version: m[2], slot: "plugins", artifact: where, form: m[5], provenance: m[3],
+        builtAt: m[6] === "build time unknown" ? null : agoMs(m[6]),
+        hashes: [{ kind: m[7], path: "x", sha256: m[8].padEnd(64, "0") }],
+      };
+    });
+    assert.deepEqual(formatStagedLines(records, [], false), lines, "regenerate the README sample from formatStagedLines");
+  }
 });

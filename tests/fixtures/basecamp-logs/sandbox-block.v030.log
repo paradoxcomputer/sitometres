@@ -1,0 +1,1 @@
+logos.basecamp.sandbox: Blocked qmldir file import "./qmldir" [plugin=zonescan_lite]: scheme "" is not allowed in the basecamp plugin sandbox (only qrc: and local files inside allowed roots are permitted).

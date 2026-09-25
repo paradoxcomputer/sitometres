@@ -1,0 +1,21 @@
+LogosAPIClient: invoking remote method "no_such_module_xyz" "x" args_count: 0
+LogosAPIClient: getToken for module: "no_such_module_xyz"
+LogosAPIClient: No token found for module: "no_such_module_xyz"
+LogosAPIClient: calling requestModule for "no_such_module_xyz"
+LogosAPIClient: getToken for module: "capability_module"
+LogosAPIClient: Found token for module: "capability_module"
+LogosAPIConsumer: requestModule for origin: "core" target: "no_such_module_xyz"
+RemoteTransportConnection: Requesting object: "capability_module" at "23:00:50.052"
+[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for: "capability_module"
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 279769072
+[LogosObject] RemoteLogosObject::callMethod "requestModule" args: 2
+[2026-09-24 23:00:50.052] [info] [logos] [capability_module] ModuleProxy: callRemoteMethod "requestModule" args: 2
+[2026-09-24 23:00:50.052] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule called with fromModuleName: "core" moduleName: "no_such_module_xyz"
+[2026-09-24 23:00:50.052] [info] [logos] [capability_module] CapabilityModulePlugin::requestModule: rejecting request for unknown target module: "no_such_module_xyz" - no token registered for it
+[LogosObject] Destroying RemoteLogosObject 0
+LogosAPIClient: requestModule result for "no_such_module_xyz" : ""
+LogosAPIConsumer: Calling invokeRemoteMethod: "no_such_module_xyz" "x" args_count: 0 timeout: 20000
+RemoteTransportConnection: Requesting object: "no_such_module_xyz" at "23:00:50.053"
+RemoteTransportConnection: Timeout waiting for replica: "no_such_module_xyz"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "no_such_module_xyz"
+qml: PROBE sync-missing-module ms=19646 -> {"error":"Module source unavailable","message":"failed to acquire remote object 'no_such_module_xyz' (module not loaded, not published, or transport failure)","method":"x","module":"no_such_module_xyz"}

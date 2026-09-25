@@ -6,20 +6,82 @@
 // pipeline red, but it must not silently read as a pass either.
 // ---------------------------------------------------------------------------
 
+import type { DiscoveredApp } from "../app/discover.js";
+import type { StagedRecord } from "../app/fingerprint.js";
 import type { FidelityReport } from "../runner/fidelity.js";
 import type { RunResult } from "../runner/runner.js";
+
+/**
+ * Which build a verdict is about.
+ *
+ * Picked off DiscoveredApp rather than restated, because these are its fields
+ * and a second copy of them is a second thing to keep in step. A repo usually
+ * holds the same app twice — an unpacked plugins/<name>/ beside a freshly
+ * built result/*.lgx — so "which one did you grade" has a real answer that the
+ * run already knows and used to spend on the terminal header alone.
+ */
+export type BuildSource = Pick<DiscoveredApp, "origin" | "form" | "builtAt"> & {
+  /** The app's own version, when its manifest declares one. Not the tool's. */
+  version?: string;
+};
+
+/**
+ * The build a report is about, or undefined when the run staged none.
+ *
+ * One function rather than the literal spelled out at each emit site: smoke has
+ * five of them and the two on the failure path were written without it, so a
+ * red job's artifact — the one a reader actually opens — could not say which
+ * build failed. A second copy of these four fields is a second thing to forget.
+ */
+export function buildSourceOf(
+  app: Pick<DiscoveredApp, "origin" | "form" | "builtAt" | "manifest"> | null | undefined,
+): BuildSource | undefined {
+  if (!app) return undefined;
+  return {
+    origin: app.origin,
+    form: app.form,
+    builtAt: app.builtAt,
+    // Typed, not merely truthy: `version` is declared `string`, this field is
+    // published in --json and as a JUnit attribute, and normalise is what keeps
+    // that promise. Saying so here means the artifact shape cannot be broken
+    // from a distance by whatever a manifest happens to hold.
+    ...(typeof app.manifest.version === "string" && app.manifest.version
+      ? { version: app.manifest.version }
+      : {}),
+  };
+}
 
 export interface MachineReport {
   tool: "sitometres";
   version: string;
   app: string | null;
   basecamp: string;
+  /**
+   * The build that was graded, when the run staged one.
+   *
+   * Optional because attach mode staged nothing: it drives a Basecamp somebody
+   * else started, so there is no build it can name — the same reason
+   * `basecamp` reads "(attached)" there.
+   */
+  source?: BuildSource;
   /** Throwaway $HOME the app saw, or null when it saw the real one. */
   sandboxHome?: string | null;
   fidelity: FidelityReport;
   verdict: RunResult["verdict"];
   durationMs: number;
+  /** The runner's own step records, `comment:` included. See StepResult. */
   steps: RunResult["steps"];
+  /**
+   * Every staged artifact with its full sha256, the app under test first. Set
+   * only when something was staged, so attach mode writes no hash at all.
+   */
+  staged?: StagedRecord[];
+  /**
+   * True for a spec whose `open:` steps and `in:` targets name more than one
+   * app. It is what puts `sitometres.app` on each JUnit testcase, so a
+   * single-app report's testcases stay exactly as they were.
+   */
+  multiApp?: boolean;
 }
 
 /**
@@ -38,6 +100,8 @@ export function crawlToMachineReport(input: {
   basecamp: string;
   /** Throwaway $HOME the app saw, or null when it saw the real one. */
   sandboxHome?: string | null;
+  /** The build that was crawled; see MachineReport.source. */
+  source?: BuildSource;
   fidelity: FidelityReport;
   durationMs: number;
   open: { ok: boolean; errors: string[] };
@@ -60,6 +124,8 @@ export function crawlToMachineReport(input: {
   unclickable?: Array<{ label: string; why: string }>;
   /** QML errors or failed calls seen while the app was opening. */
   openProblems?: string[];
+  /** What was staged; see MachineReport.staged. */
+  staged?: StagedRecord[];
 }): MachineReport {
   const steps: MachineReport["steps"] = [];
   if (input.setupFailed) {
@@ -244,11 +310,13 @@ export function crawlToMachineReport(input: {
     version: input.version,
     app: input.app,
     basecamp: input.basecamp,
+    ...(input.source ? { source: input.source } : {}),
     ...(input.sandboxHome !== undefined ? { sandboxHome: input.sandboxHome } : {}),
     fidelity: input.fidelity,
     verdict,
     durationMs: input.durationMs,
     steps,
+    ...(input.staged?.length ? { staged: input.staged } : {}),
   };
 }
 
@@ -266,6 +334,16 @@ export function toJUnit(report: MachineReport): string {
     .map((s) => {
       const name = esc(s.name);
       const time = (s.durationMs / 1000).toFixed(3);
+      // Which app the step ran in, for a spec that drives more than one. Only
+      // then: a single-app report's testcases stay byte-identical, and
+      // <properties> ahead of the body is where JUnit puts per-case metadata.
+      const appProp = report.multiApp && s.app
+        ? `      <properties>\n        <property name="sitometres.app" value="${esc(s.app)}"/>\n      </properties>\n`
+        : "";
+      // Findings only. A step's `comment:` is in the JSON record, as a field of
+      // its own; it is deliberately not here. Both bodies JUnit has are what
+      // the run FOUND — <failure> and <skipped> — and there is no third slot a
+      // reader would not take for a measurement, system-out least of all.
       const detail = s.checks
         .filter((c) => c.verdict !== "pass")
         .map((c) => `${c.description}${c.detail ? `: ${c.detail}` : ""}`)
@@ -277,21 +355,61 @@ export function toJUnit(report: MachineReport): string {
         // the one artifact a CI reader actually sees.
         const msg = esc(s.error || detail || "the step failed with no further detail");
         return `    <testcase classname="${esc(suiteName)}" name="${name}" time="${time}">\n` +
+          appProp +
           `      <failure message="${firstLine(msg)}">${msg}</failure>\n    </testcase>`;
       }
       if (s.verdict === "inconclusive") {
         return `    <testcase classname="${esc(suiteName)}" name="${name}" time="${time}">\n` +
+          appProp +
           `      <skipped message="${firstLine(esc(detail || report.fidelity.summary))}"/>\n    </testcase>`;
+      }
+      if (appProp) {
+        return `    <testcase classname="${esc(suiteName)}" name="${name}" time="${time}">\n` +
+          appProp + `    </testcase>`;
       }
       return `    <testcase classname="${esc(suiteName)}" name="${name}" time="${time}"/>`;
     })
     .join("\n");
 
+  // The build goes in the XML too, not only in the JSON: JUnit is the file a CI
+  // reader actually opens, and a testsuite that names the app but not the build
+  // cannot answer "what did this verdict test?" — which is the whole question
+  // when a repo holds two copies of the app. <properties> is the element JUnit
+  // has for this, publishers that do not render it ignore it, and the schema
+  // orders it before the first <testcase>, so it goes in front of `cases`
+  // rather than after. builtAt stays the epoch ms the JSON carries: a stat that
+  // failed reads 0, and rendering that as 1970-01-01 would state a build date
+  // nothing measured.
+  const sourceProps = report.source
+    ? `      <property name="sitometres.origin" value="${esc(report.source.origin)}"/>\n` +
+      `      <property name="sitometres.form" value="${esc(report.source.form)}"/>\n` +
+      `      <property name="sitometres.builtAt" value="${report.source.builtAt}"/>\n` +
+      (report.source.version
+        ? `      <property name="sitometres.version" value="${esc(report.source.version)}"/>\n`
+        : "")
+    : "";
+  // Every staged artifact, dependencies included, with the full digest of the
+  // file Basecamp loaded. A build time nobody could read is written as
+  // `unknown`, not as 0, which a reader would take for 1970.
+  const stagedProps = (report.staged ?? [])
+    .map((r) => {
+      const key = `sitometres.staged.${r.name}`;
+      return (
+        `      <property name="${esc(key)}.version" value="${esc(r.version ?? "")}"/>\n` +
+        `      <property name="${esc(key)}.artifact" value="${esc(r.artifact)}"/>\n` +
+        `      <property name="${esc(key)}.provenance" value="${esc(r.provenance)}"/>\n` +
+        `      <property name="${esc(key)}.builtAt" value="${r.builtAt === null ? "unknown" : r.builtAt}"/>\n` +
+        r.hashes.map((h) => `      <property name="${esc(`${key}.sha256.${h.path}`)}" value="${esc(h.sha256)}"/>\n`).join("")
+      );
+    })
+    .join("");
+  const props = sourceProps || stagedProps ? `    <properties>\n${sourceProps}${stagedProps}    </properties>\n` : "";
+
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<testsuites>\n` +
     `  <testsuite name="${esc(suiteName)}" tests="${steps.length}" failures="${failures}" ` +
-    `skipped="${skipped}" time="${(report.durationMs / 1000).toFixed(3)}">\n${cases}\n  </testsuite>\n` +
+    `skipped="${skipped}" time="${(report.durationMs / 1000).toFixed(3)}">\n${props}${cases}\n  </testsuite>\n` +
     `</testsuites>\n`
   );
 }
@@ -316,7 +434,13 @@ const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 const ILLEGAL_XML = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
 export function esc(s: string): string {
-  return s
+  // Coerced, not trusted. This is the last thing between a finished run and the
+  // only file CI reads, and it used to be one `s.replace is not a function`
+  // away from throwing away a green run's evidence - the failure mode this
+  // output exists to prevent. The declared type says string; a value that
+  // reached here as something else is a bug worth fixing at its source, but not
+  // one worth losing the artifact over.
+  return String(s)
     .replace(ANSI, "")
     .replace(ILLEGAL_XML, "")
     .replace(/&/g, "&amp;")

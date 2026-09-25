@@ -9,13 +9,15 @@
 // print selectors that can be pasted straight into a spec.
 // ---------------------------------------------------------------------------
 
+import type { InspectorClient } from "../inspector/client.js";
 import { uiLabel } from "../app/manifest.js";
 import { explainOpenFailure, parseLine } from "../logs/classify.js";
-import { boot, type BootOptions, type CommandDeps, REAL_DEPS } from "../session.js";
+import { boot, type BootOptions, type CommandDeps, OutsideDeadline, REAL_DEPS } from "../session.js";
 import { openApp, openOptionsFor, OpenError } from "../runner/open.js";
 import { resolveAll } from "../runner/selector.js";
 import { resolveSetupSpec, runSetupProfile } from "../runner/setup.js";
 import { unlockWallet } from "../app/wallet.js";
+import { openBudgetFrom } from "../timeouts.js";
 import { isClickableType, isEditableType, UiSnapshot } from "../runner/snapshot.js";
 
 // Same rule as every other reporter: honour a pipe and NO_COLOR. Painting
@@ -42,14 +44,21 @@ export async function inspect(opts: InspectOptions = {}, deps: CommandDeps = REA
     let scopeId: string | undefined;
 
     if (appName) {
+      // The open, the unlock and the listing run outside any spec step, on a
+      // deadline that follows the bridge window the log has shown so far.
+      const deadline = new OutsideDeadline(b.session, opts);
       try {
+        deadline.follow();
         const scope = await openApp(
           b.session.inspector,
           appName,
           uiLabel(b.app!.manifest),
-          openOptionsFor(b.app, b.userDir?.root, appName, opts.timeoutMs),
+          openOptionsFor(b.app, b.userDir?.root, appName, openBudgetFrom(opts)),
         );
         scopeId = scope.scopeId;
+        // Read again now the app has logged its first dispatches: the unlock
+        // is a synchronous backend call, and so may be what the listing reads.
+        deadline.follow();
         // Unlock, then walk the gate — in that order, and both of them for the
         // same reason: without either, this command lists the controls of a
         // lock screen and calls them the app's. `--wallet-password` was already
@@ -71,6 +80,8 @@ export async function inspect(opts: InspectOptions = {}, deps: CommandDeps = REA
           appName,
           "listing",
           opts.json,
+          undefined,
+          { module: appName, scope },
         );
       } catch (err) {
         const e = err as OpenError;
@@ -140,9 +151,12 @@ export async function inspect(opts: InspectOptions = {}, deps: CommandDeps = REA
     }
 
     const visibleOnly = <T extends { visible: boolean }>(xs: T[]) => (opts.hidden ? xs : xs.filter((x) => x.visible));
+    const shell = await shellDialogControls(b.session.inspector);
 
     if (opts.json) {
-      console.log(JSON.stringify({ app: appName, clickables, fields, labels: snap.labels(opts.hidden) }, null, 2));
+      console.log(
+        JSON.stringify({ app: appName, clickables, fields, labels: snap.labels(opts.hidden), ...(shell ? { shell } : {}) }, null, 2),
+      );
       return 0;
     }
 
@@ -164,6 +178,15 @@ export async function inspect(opts: InspectOptions = {}, deps: CommandDeps = REA
       console.log(`      ${DIM}${f.type}${f.objectName ? `  objectName=${f.objectName}` : "  (no objectName — add one to make this stable)"}${RST}`);
     }
 
+    if (shell && shell.length > 0) {
+      // Listed hidden or not: these dialogs are closed until something opens
+      // them, and the point is to know their handles before that happens.
+      console.log(`\n  ${BOLD}Basecamp dialogs${RST} ${DIM}(${shell.length}, outside the app; select with in: shell)${RST}`);
+      for (const d of shell) {
+        console.log(`    ${CY}${d.selector}${RST}${d.visible ? "" : `  ${DIM}(not open now)${RST}`}`);
+      }
+    }
+
     const noNames = [...cs, ...fs2].filter((x) => !x.objectName).length;
     if (noNames > 0) {
       console.log(
@@ -175,6 +198,34 @@ export async function inspect(opts: InspectOptions = {}, deps: CommandDeps = REA
     return 0;
   } finally {
     await b.dispose();
+  }
+}
+
+/** The objectNames Basecamp 0.3.0 gives its own dialogs and their buttons. */
+const SHELL_HANDLE = /^(?:intentChooser|intentProvider_|intentInstallable|confirmationDialog\.|uninstallDialog)/;
+
+/**
+ * The controls in Basecamp's own dialogs, as `in: shell` selectors, or null on
+ * a build with no dialog overlay (0.2.2). 0.3.0 draws them in an overlay
+ * outside every app's dock, so the listing above never includes them.
+ */
+async function shellDialogControls(
+  inspector: InspectorClient,
+): Promise<Array<{ objectName: string; type: string; visible: boolean; selector: string }> | null> {
+  try {
+    const overlay = (await inspector.findByProperty("objectName", "overlayDialogs"))?.matches?.[0];
+    if (!overlay) return null;
+    const snap = await UiSnapshot.capture(inspector, String(overlay.id));
+    return snap.nodes
+      .filter((n) => SHELL_HANDLE.test(n.objectName))
+      .map((n) => ({
+        objectName: n.objectName,
+        type: shortType(n.type),
+        visible: n.visible,
+        selector: `{ objectName: ${JSON.stringify(n.objectName)}, in: shell }`,
+      }));
+  } catch {
+    return null;
   }
 }
 

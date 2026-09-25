@@ -1,0 +1,8 @@
+LogosAPIClient: invoking remote method "package_manager" "noSuchMethodXyz" args_count: 0
+LogosAPIClient: getToken for module: "package_manager"
+LogosAPIClient: Found token for module: "package_manager"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_manager" "noSuchMethodXyz" args_count: 0 timeout: 20000
+[LogosObject] LogosAPIConsumer: calling via LogosObject::callMethod "noSuchMethodXyz"
+[LogosObject] RemoteLogosObject::callMethod "noSuchMethodXyz" args: 0
+ui-host [ "zonescan_lite" ]: "zonescan.lite: could not reach zonescan: request timed out after 15s"
+RemoteLogosObject: callRemoteMethod failed or timed out: 1

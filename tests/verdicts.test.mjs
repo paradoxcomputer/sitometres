@@ -47,6 +47,50 @@ test("runChecks itself refuses to spread a string, even called directly", async 
   assert.equal(noCalls[0].description, 'does not call mod.doThing');
 });
 
+// --- a spec that asserts nothing --------------------------------------------
+
+test("a spec with no steps is refused, not run to a green verdict", () => {
+  // `steps: []` validated cleanly, and the runner grades a run by its steps, so
+  // a truncated spec — or one whose steps were all commented out — launched a
+  // Basecamp, drove nothing and exited 0 PASS. verdictOf([]) stays a pass on
+  // purpose (see below); it is the FILE that has to be refused.
+  for (const doc of [{ app: "x", steps: [] }, { steps: [] }]) {
+    assert.throws(
+      () => validateSpec(doc),
+      (e) => e instanceof SpecError && /`steps` is empty/.test(e.message),
+      JSON.stringify(doc),
+    );
+  }
+});
+
+test("a bad header still reports the header, not the empty step list", () => {
+  // The emptiness check runs last for this reason: a document that is both
+  // mis-typed and empty should name the error its author can act on. Moving it
+  // above the header checks silently retargets five errors that used to name
+  // the key at fault.
+  assert.throws(
+    () => validateSpec({ app: 5, steps: [] }),
+    (e) => e instanceof SpecError && /`app` must be a string/.test(e.message),
+  );
+  assert.throws(
+    () => validateSpec({ tiemout: "30s", steps: [] }),
+    (e) => e instanceof SpecError && /unknown key `tiemout`/.test(e.message),
+  );
+});
+
+test("a step with an action and no expect is still a spec — deliberately", () => {
+  // The scope boundary, and the profiles this tool ships depend on it:
+  // profiles/medusa_ui.yaml has three bare `click:`/`type:` steps. Such a step
+  // still fails on an unresolvable selector, on a crash, and by default on a
+  // new QML error or a failed call; where those cannot be read, runChecks
+  // returns INCONCLUSIVE rather than a pass (see above). Nothing about it is
+  // the empty-spec defect, and widening the refusal to reach it would refuse
+  // the tool's own profile.
+  const spec = validateSpec({ app: "x", steps: [{ click: "Unlock" }] });
+  assert.equal(spec.steps.length, 1);
+  assert.equal(spec.steps[0].expect, undefined);
+});
+
 // --- unreadable evidence -----------------------------------------------------
 
 test("an explicitly named log expectation is INCONCLUSIVE, never a pass", async () => {
@@ -86,7 +130,7 @@ test("negative expectations are the ones that need time to be falsified", () => 
   for (const k of ["notText", "noCalls", "noErrors", "noWarnings", "callsSucceed"]) {
     assert.ok(isNegative(k), `${k} is only ever falsified by something happening`);
   }
-  for (const k of ["text", "state", "calls", "console", "events"]) {
+  for (const k of ["text", "state", "calls", "console", "events", "file"]) {
     assert.ok(!isNegative(k), `${k} is monotone: once true it stays true`);
   }
   assert.ok(allMonotone([{ kind: "text", verdict: "pass", description: "" }]));
@@ -186,7 +230,7 @@ test("a window-based negative expectation cannot un-fail; notText can", () => {
     assert.ok(isIrrecoverable(k), `${k} reads the log window, which only grows`);
   }
   assert.ok(!isIrrecoverable("notText"), "text can leave the screen again");
-  for (const k of ["text", "state", "calls", "console", "events"]) {
+  for (const k of ["text", "state", "calls", "console", "events", "file"]) {
     assert.ok(!isIrrecoverable(k), `${k} is positive: it can still come true`);
   }
 });

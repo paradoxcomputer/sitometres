@@ -1,11 +1,13 @@
 # Cutting a release. Nothing here runs until a tag is pushed:
 #
+#   # promote Unreleased in CHANGELOG.md to `## [X.Y.Z] - <date>`, add its link
+#   # at the foot, and commit it first: `npm version` refuses a dirty tree.
 #   npm version <patch|minor|major>   # writes package.json and tags vX.Y.Z
 #   git push --follow-tags
 #
-# It typechecks, tests, refuses a tag that disagrees with package.json, then
-# publishes to npm with provenance and opens a GitHub Release with generated
-# notes.
+# It typechecks, tests, refuses a tag that disagrees with package.json or that
+# the changelog does not name, then publishes to npm with provenance and opens
+# a GitHub Release with generated notes.
 #
 # Needs one repository secret: NPM_TOKEN, an npm automation token with publish
 # rights. Without it the publish step is the only thing that fails, after the
@@ -84,6 +86,19 @@ jobs:
           pkg="$(node -p "require('./package.json').version")"
           if [ "$tag" != "$pkg" ]; then
             echo "tag $GITHUB_REF_NAME does not match package.json version $pkg"
+            exit 1
+          fi
+      # CHANGELOG.md ships inside the tarball, so a release whose entries are
+      # still filed under `## [Unreleased]` publishes a document that contradicts
+      # itself - and nothing else in this flow would notice: `npm version` writes
+      # package.json, not the changelog, and there is no version lifecycle hook.
+      # -F because a version is full of dots, and a fixed string cannot misread
+      # them as wildcards.
+      - name: the changelog names this version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if ! grep -qF "## [$tag]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [$tag]' heading - promote Unreleased before tagging"
             exit 1
           fi
       - name: publish

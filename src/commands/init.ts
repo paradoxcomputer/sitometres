@@ -10,11 +10,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { uiLabel } from "../app/manifest.js";
-import { boot, type BootOptions, type CommandDeps, REAL_DEPS } from "../session.js";
+import { boot, type BootOptions, type CommandDeps, OutsideDeadline, REAL_DEPS } from "../session.js";
 import { openApp, openOptionsFor, OpenError } from "../runner/open.js";
 import { isClickableType, UiSnapshot } from "../runner/snapshot.js";
 import { resolveSetupSpec, runSetupProfile } from "../runner/setup.js";
 import { unlockWallet } from "../app/wallet.js";
+import { openBudgetFrom } from "../timeouts.js";
 import { explainOpenFailure, parseLine } from "../logs/classify.js";
 
 export interface InitOptions extends BootOptions {
@@ -42,13 +43,17 @@ export async function init(opts: InitOptions = {}, deps: CommandDeps = REAL_DEPS
     const name = app.manifest.name;
     const label = uiLabel(app.manifest);
 
+    // The open, the unlock and the snapshot run outside any spec step, on a
+    // deadline that follows the bridge window the log has shown so far.
+    const deadline = new OutsideDeadline(b.session, opts);
+    deadline.follow();
     let scope;
     try {
       scope = await openApp(
         b.session.inspector,
         name,
         label,
-        openOptionsFor(b.app, b.userDir?.root, name, opts.timeoutMs),
+        openOptionsFor(b.app, b.userDir?.root, name, openBudgetFrom(opts)),
       );
     } catch (err) {
       // init and inspect swallowed the hint, so the one command whose whole job
@@ -61,6 +66,9 @@ export async function init(opts: InitOptions = {}, deps: CommandDeps = REAL_DEPS
       return 1;
     }
     const scopeId = scope.scopeId;
+    // Read again now the app has logged its first dispatches: the unlock is a
+    // synchronous backend call of its own.
+    deadline.follow();
 
     // Unlock, then walk the gate, then look. `init` is the documented first
     // step of the init -> run workflow, and against a gated app it used to
@@ -81,6 +89,9 @@ export async function init(opts: InitOptions = {}, deps: CommandDeps = REAL_DEPS
       resolveSetupSpec(opts, name, b.app?.artifact ?? null),
       name,
       "starter spec",
+      undefined,
+      undefined,
+      scope ? { module: name, scope } : undefined,
     );
 
     const snap = await UiSnapshot.capture(b.session.inspector, scopeId);
@@ -133,9 +144,12 @@ export function template(
     ``,
     `app: ${yamlStr(name)}`,
     ...(deps.length ? [`with: [${deps.map(yamlStr).join(", ")}]`] : []),
-    // Above the transport's own 20 s reply timeout; at 15 s a call that timed
-    // out could not be seen to have timed out, and the open could not finish.
-    `timeout: 30s`,
+    // No `timeout:`. The default is already 30 s on stock Basecamp, and it
+    // follows the bridge's reply window when a build raises it, which a
+    // number written here would pin: a step that closes before the bridge
+    // gives up cannot see its call time out. The comment says where to set one.
+    `# Each step may take 30s, or the bridge's reply window plus 10s when that`,
+    `# is longer. Set timeout: here, or on a step, to change it.`,
     ``,
     `steps:`,
     `  - name: the app opens`,

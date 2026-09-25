@@ -1,0 +1,12 @@
+LogosAPIClient: invoking remote method "package_downloader" "listRepositories" args_count: 0
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+LogosAPIConsumer: Calling invokeRemoteMethod: "package_downloader" "listRepositories" args_count: 0 timeout: 1500
+LogosAPIConsumer: cached handle for "package_downloader" went stale; re-acquiring
+[LogosObject] Destroying RemoteLogosObject 0
+RemoteTransportConnection: no listener at "local:logos_package_downloader_9f298bb9883d" -- request for "package_downloader" will block up to 1500 ms and then fail. Is the module loaded?
+RemoteTransportConnection: Requesting object: "package_downloader" at "23:03:37.780"
+LogosAPIConsumer: '"package_downloader"::"catalogChanged"' still not reachable after 3499 ms -- subscription is DEFERRED, not lost; it will arm when the module appears. Is the module loaded?
+LogosAPIConsumer: '"package_downloader"::"downloadProgress"' still not reachable after 3499 ms -- subscription is DEFERRED, not lost; it will arm when the module appears. Is the module loaded?
+RemoteTransportConnection: Timeout waiting for replica: "package_downloader"
+LogosAPIConsumer: Failed to acquire plugin/replica for object: "package_downloader"

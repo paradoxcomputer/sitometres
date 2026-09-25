@@ -16,6 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { DiscoveredApp } from "./discover.js";
 import { reapDirOnExit, releaseDir, restoreOnExit } from "./lifecycle.js";
 import { readTarGz } from "./discover.js";
@@ -60,8 +61,90 @@ export interface StagedUserDir {
    * `keepStaged` was asked for.
    */
   restores: boolean;
+  /** Where Basecamp will write its log: <root>/logs, unless config.yaml moved it. */
   logsDir: string;
+  /**
+   * What a caller-supplied user-dir's config.yaml (Basecamp 0.3.0) says about
+   * logging, when it has one. Never edited: it is the caller's file.
+   */
+  loggingConfig?: LoggingConfig;
   cleanup(): void;
+}
+
+/**
+ * The `logging:` block of a 0.3.0 user-dir's config.yaml, resolved the way
+ * Basecamp resolves it (app/utils/LoggingConfig.cpp). 0.2.2 reads no such file.
+ */
+export interface LoggingConfig {
+  /** The file it came from. */
+  path: string;
+  /** False: Basecamp writes no log file and mirrors nothing to stdout. */
+  enabled: boolean;
+  /** False: Basecamp still writes its log file, but no longer mirrors it to stdout. */
+  console: boolean;
+  /** The logs directory, absolute. */
+  dir: string;
+  /** The log file's name inside it. */
+  file: string;
+  /** Why the document was not applied, when Basecamp would fall back to its defaults. */
+  problem?: string;
+}
+
+/**
+ * Read `<userDir>/config.yaml` the way Basecamp 0.3.0 does, or null when there
+ * is none.
+ *
+ * A document Basecamp would refuse (not YAML, not a mapping, a `file` with a
+ * path in it) leaves Basecamp on its defaults, so the same defaults are
+ * returned here with the reason attached rather than half of what it says.
+ */
+export function readLoggingConfig(userDir: string): LoggingConfig | null {
+  const file = path.join(userDir, "config.yaml");
+  let text: string;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  const defaults: LoggingConfig = {
+    path: file,
+    enabled: true,
+    console: true,
+    dir: path.join(userDir, "logs"),
+    file: "basecamp.log",
+  };
+  let doc: unknown;
+  try {
+    doc = parseYaml(text);
+  } catch (err) {
+    return { ...defaults, problem: `not valid YAML (${(err as Error).message.split("\n")[0]})` };
+  }
+  if (doc === null || doc === undefined) return defaults;
+  if (typeof doc !== "object" || Array.isArray(doc)) return { ...defaults, problem: "not a mapping at the top level" };
+  const logging = (doc as Record<string, unknown>).logging;
+  if (logging === null || logging === undefined) return defaults;
+  if (typeof logging !== "object" || Array.isArray(logging)) return { ...defaults, problem: "`logging` is not a mapping" };
+  const l = logging as Record<string, unknown>;
+  const bool = (v: unknown, d: boolean): boolean | null => (v === undefined || v === null ? d : typeof v === "boolean" ? v : null);
+  const enabled = bool(l.enabled, true);
+  const consoleOn = bool(l.console, true);
+  if (enabled === null || consoleOn === null) {
+    return { ...defaults, problem: "`logging.enabled` and `logging.console` must be true or false" };
+  }
+  const name = l.file === undefined || l.file === null ? "basecamp.log" : String(l.file);
+  if (name.length === 0 || /[\\/]|\.\./.test(name)) {
+    return { ...defaults, problem: `logging.file must be a plain file name, not ${JSON.stringify(name)}` };
+  }
+  const rawDir = l.dir === undefined || l.dir === null ? "" : String(l.dir);
+  const dir =
+    rawDir === ""
+      ? defaults.dir
+      : rawDir === "~" || rawDir.startsWith("~/")
+        ? path.join(os.homedir(), rawDir.slice(1))
+        : path.isAbsolute(rawDir)
+          ? rawDir
+          : path.join(userDir, rawDir);
+  return { path: file, enabled, console: consoleOn, dir, file: name };
 }
 
 export interface StageOptions {
@@ -213,6 +296,8 @@ export function stageUserDir(apps: DiscoveredApp[], opts: StageOptions = {}): St
   // otherwise leave the developer without a plugin they had installed.
   const disarm = undo.length > 0 ? restoreOnExit(putBack) : () => {};
 
+  // Only a caller's user-dir can hold one: a throwaway one is made empty.
+  const loggingConfig = ephemeral ? null : readLoggingConfig(root);
   return {
     root,
     staged,
@@ -221,7 +306,8 @@ export function stageUserDir(apps: DiscoveredApp[], opts: StageOptions = {}): St
     replaced,
     inPlace,
     restores: undo.length > 0,
-    logsDir: path.join(root, "logs"),
+    logsDir: loggingConfig?.dir ?? path.join(root, "logs"),
+    ...(loggingConfig ? { loggingConfig } : {}),
     cleanup() {
       disarm();
       putBack();
@@ -251,6 +337,40 @@ function existingApps(root: string): string[] {
   return [...new Set(out)];
 }
 
+/** The platform variants a .lgx carries, in archive order. */
+export function lgxVariants(entries: Array<{ name: string }>): string[] {
+  const available = new Set<string>();
+  for (const e of entries) {
+    const m = /^(?:\.\/)?variants\/([^/]+)\//.exec(e.name);
+    if (m) available.add(m[1]!);
+  }
+  return [...available];
+}
+
+/**
+ * Which of a package's variants to unpack.
+ *
+ * The requested one when it is there; otherwise the only one there is, so a
+ * cross-built package still runs rather than failing opaquely; "" for a
+ * package with no variants at all. Several and none of them requested is a
+ * question for the user, not a guess.
+ *
+ * One function because two things must agree on it: unpacking, which writes
+ * the variant, and the staging prediction, which hashes the library that
+ * unpacking will write. A second copy of this choice is how `doctor` would
+ * come to name a file the run never staged.
+ */
+export function chooseVariant(available: string[], requested: string, file?: string): string {
+  if (available.includes(requested)) return requested;
+  const only = [...new Set(available)];
+  if (only.length === 0) return "";
+  if (only.length === 1) return only[0]!;
+  throw new Error(
+    `${file ? path.basename(file) : "the package"} has no "${requested}" variant. Available: ${only.join(", ")}. ` +
+      `Pass --variant to choose one.`,
+  );
+}
+
 /**
  * Unpack a .lgx into an installed-plugin layout.
  * Falls back to any single available variant when the host's is absent, so a
@@ -261,25 +381,7 @@ export function unpackLgx(file: string, destDir: string, variant: string): void 
   const entries = readTarGz(file);
   if (entries.length === 0) throw new Error(`${file} is not a readable .lgx archive`);
 
-  const available = new Set<string>();
-  for (const e of entries) {
-    const m = /^(?:\.\/)?variants\/([^/]+)\//.exec(e.name);
-    if (m) available.add(m[1]!);
-  }
-  let chosen = variant;
-  if (!available.has(chosen)) {
-    const only = [...available];
-    if (only.length === 0) {
-      chosen = "";
-    } else if (only.length === 1) {
-      chosen = only[0]!;
-    } else {
-      throw new Error(
-        `${path.basename(file)} has no "${variant}" variant. Available: ${only.join(", ")}. ` +
-          `Pass --variant to choose one.`,
-      );
-    }
-  }
+  const chosen = chooseVariant(lgxVariants(entries), variant, file);
 
   const prefix = chosen ? `variants/${chosen}/` : null;
   for (const e of entries) {

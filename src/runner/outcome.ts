@@ -91,8 +91,9 @@ export interface OutcomeInput {
    * Failures already paired and attributed to THIS window by the caller.
    *
    * Pairing inside a per-click window is wrong whenever a reply outlives the
-   * window that dispatched it — which, with a 2.5 s crawl settle and a 20 s
-   * transport timeout, is every timeout. The failure line lands in a later
+   * window that dispatched it — which, with a 2.5 s crawl settle and a bridge
+   * reply window of 20 s on stock Basecamp (longer on a build that raises it),
+   * is every timeout. The failure line lands in a later
    * click's window, that window contains that click's own healthy dispatch, and
    * pairing confidently names it as the victim. Reproduced: a click whose call
    * succeeded graded `failed` with the name of the call that succeeded.

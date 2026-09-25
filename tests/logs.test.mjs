@@ -4,8 +4,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { LogBuffer } from "../dist/logs/buffer.js";
-import { parseLine, pairFailures, attributeTo } from "../dist/logs/classify.js";
+import { parseLine, pairFailures, attributeTo, callsIn, callName } from "../dist/logs/classify.js";
 import { expandLine } from "../dist/logs/expand.js";
+import { fixtureBuffer } from "./helpers/basecamp-logs.mjs";
 
 const feed = (lines) => {
   const b = new LogBuffer();
@@ -139,4 +140,66 @@ test("closing the stream releases waiters instead of hanging", async () => {
   const p = b.waitFor(() => false, { timeoutMs: 60_000 });
   b.close("Basecamp exited");
   await assert.rejects(p, /Basecamp exited/);
+});
+
+// --- 0.3.0's held calls: dispatched later, or never ---------------------
+
+test("a held call that a later dispatch to the same module consumes drops out of callsIn, and pairFailures marks it dispatched", () => {
+  // The three real shapes, in the order 0.3.0 really prints them: the hold
+  // (module not reachable yet), the getToken that names the module for the
+  // async dispatch that follows it, then the dispatch itself. Once the
+  // dispatch lands, the earlier hold was not a call the app is still waiting
+  // on — it is the SAME call, now under way — so callsIn must not report it
+  // twice, and pairFailures must not treat it as still outstanding.
+  const p = feed([
+    'LogosAPIConsumer: \'"widget_mod"::""\' deferred pending the module becoming reachable',
+    'LogosAPIClient: getToken for module: "widget_mod"',
+    'LogosAPIConsumer: async calling via LogosObject::callMethodAsync "listWidgets"',
+  ]);
+
+  const calls = callsIn(p);
+  assert.deepEqual(calls.map(callName), ["widget_mod.listWidgets"], "the held placeholder is consumed, not reported alongside the real dispatch");
+  assert.equal(calls[0].held, undefined, "the surviving entry is the dispatch, not the hold");
+
+  // A held call that WAS dispatched must not also register as still-held-and-
+  // now-unreachable if 0.3.0's 60s warning fires later for the same module.
+  assert.equal(pairFailures(p).size, 0, "nothing failed here — the hold resolved into a normal dispatch");
+});
+
+test("acquire-fail-sync.v030.log: the one call in flight is named with confidence", () => {
+  // Real corpus fixture, never driven through pairFailures until now: a
+  // synchronous call to a module whose replica is never acquired. Exactly one
+  // call was in flight, so the pairing names it outright instead of hedging
+  // with alternatives.
+  const p = fixtureBuffer("acquire-fail-sync.v030.log").slice(0).map(parseLine);
+  const paired = [...pairFailures(p).values()];
+  assert.equal(paired.length, 1, JSON.stringify(paired));
+  assert.equal(paired[0].method, "x");
+  assert.equal(paired[0].module, "no_such_module_xyz");
+  assert.equal(paired[0].confident, true);
+  assert.deepEqual(paired[0].alternatives, []);
+});
+
+test("acquire-fail-stale-handle.v030.log: a re-acquired handle still pairs to the call that was in flight", () => {
+  const p = fixtureBuffer("acquire-fail-stale-handle.v030.log").slice(0).map(parseLine);
+  const paired = [...pairFailures(p).values()];
+  assert.ok(paired.length >= 1, JSON.stringify(paired));
+  assert.equal(paired[0].method, "listRepositories");
+  assert.equal(paired[0].module, "package_downloader");
+});
+
+test("held-async-unreachable.v030.log: a held call that never dispatched is named, not lost", () => {
+  // Real corpus fixture: the hold fires, then the 3s warning that it is still
+  // not reachable. No dispatch ever follows, so this is failure — unlike the
+  // synthetic case above where a dispatch resolved the hold.
+  const p = fixtureBuffer("held-async-unreachable.v030.log").slice(0).map(parseLine);
+  const paired = [...pairFailures(p).values()];
+  assert.equal(paired.length, 1, JSON.stringify(paired));
+  assert.equal(paired[0].module, "no_such_module_sito");
+  assert.equal(paired[0].method, "?", "only the module survives a call that was never dispatched");
+  assert.equal(paired[0].confident, true);
+
+  const calls = callsIn(p);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].held, true, "callsIn still reports it — held, and honestly labelled so");
 });

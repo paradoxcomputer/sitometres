@@ -10,6 +10,14 @@ import { LogBuffer } from "../dist/logs/buffer.js";
 import { parseLine } from "../dist/logs/classify.js";
 import { runChecks, verdictOf, matchesCall, observedCalls } from "../dist/runner/assert.js";
 import { pairFailures } from "../dist/logs/classify.js";
+import { DIALECTS, dialectTest } from "./helpers/basecamp-logs.mjs";
+
+// Every case below runs once per Basecamp dialect: 0.3.0 split the transport's
+// failure line in two, and a verdict must not depend on which one printed it.
+// SYNC_FAIL is the line each version really printed (tests/fixtures).
+for (const DIALECT of DIALECTS) {
+const test = dialectTest(DIALECT);
+const SYNC_FAIL = DIALECT.syncFail;
 
 const CALL_OK = [
   'LogosAPIClient: invoking remote method "medusa_core" "connectRequest" args_count: 1',
@@ -18,7 +26,7 @@ const CALL_OK = [
 const CALL_FAILED = [
   'LogosAPIClient: invoking remote method "medusa_core" "getSequencerStatus" args_count: 0',
   '[LogosObject] RemoteLogosObject::callMethod "getSequencerStatus" args: 0',
-  "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+  SYNC_FAIL,
 ];
 const POLL_NOISE = [
   'LogosAPIClient: invoking remote method "medusa_core" "pendingRequests" args_count: 0',
@@ -84,7 +92,7 @@ test("a failure with other calls in flight is reported as a best guess", async (
     '[LogosObject] RemoteLogosObject::callMethod "getSecurityState" args: 0',
     '[LogosObject] RemoteLogosObject::callMethod "pendingRequests" args: 0',
     '[LogosObject] RemoteLogosObject::callMethod "getWalletState" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
   ];
   const checks = await runChecks(ctx(concurrent), {});
   const c = checks.find((k) => k.kind === "callsSucceed");
@@ -98,8 +106,8 @@ test("a failure with other calls in flight is reported as a best guess", async (
 test("one failure does not reuse another's anchor, and is still reported", () => {
   const two = windowOf([
     '[LogosObject] RemoteLogosObject::callMethod "alpha" args: 0',
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
-    "RemoteLogosObject: callRemoteMethod failed or timed out: 1",
+    SYNC_FAIL,
+    SYNC_FAIL,
   ]);
   const paired = [...pairFailures(two).values()];
   // Two failures happened, so two must be reported. This test used to assert
@@ -113,7 +121,7 @@ test("one failure does not reuse another's anchor, and is still reported", () =>
 
 test("a burst of failures does not collapse to one", () => {
   const lines = ['[LogosObject] RemoteLogosObject::callMethod "poll" args: 0'];
-  for (let i = 0; i < 22; i++) lines.push("RemoteLogosObject: callRemoteMethod failed or timed out: 1");
+  for (let i = 0; i < 22; i++) lines.push(SYNC_FAIL);
   assert.equal([...pairFailures(windowOf(lines)).values()].length, 22);
 });
 
@@ -129,6 +137,23 @@ test("a failed call is reported even when the call itself was expected", async (
 test("ignore_calls silences a polling loop without hiding real calls", () => {
   const seen = observedCalls(windowOf([...POLL_NOISE, ...CALL_OK]), ["medusa_core.pendingRequests"]);
   assert.deepEqual(seen, ["medusa_core.connectRequest"]);
+});
+
+test("ignore_calls reaches the calls:/no_calls: checks themselves, not only observedCalls", async () => {
+  // observedCalls() above is a standalone helper with its own ignore param.
+  // runChecks reads ctx.ignoreCalls directly for the SAME purpose inside its
+  // calls:/no_calls: branch — a separate filter, on a separate list, and
+  // untested until now.
+  const checks = await runChecks(ctx([...POLL_NOISE, ...CALL_OK], { ignoreCalls: ["medusa_core.pendingRequests"] }), {
+    calls: ["medusa_core.connectRequest"],
+    noCalls: ["medusa_core.pendingRequests"],
+  });
+  assert.equal(checks.find((c) => c.kind === "calls").verdict, "pass", "the real call still counts");
+  assert.equal(
+    checks.find((c) => c.kind === "noCalls").verdict,
+    "pass",
+    "the ignored call was made, but ignore_calls means it does not break no_calls either",
+  );
 });
 
 test("no_calls fails when the call was made", async () => {
@@ -235,3 +260,4 @@ test("verdictOf ranks fail over inconclusive over pass", () => {
   assert.equal(verdictOf([{ verdict: "pass" }, { verdict: "inconclusive" }]), "inconclusive");
   assert.equal(verdictOf([{ verdict: "pass" }]), "pass");
 });
+}

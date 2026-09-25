@@ -20,7 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 
-import { discoverApps, hasInspector, locateBasecamp, readLgxManifest, staleRememberedBasecamp, better } from "../dist/app/discover.js";
+import { discoverApps, hasInspector, locateBasecamp, readLgxManifest, staleRememberedBasecamp, better, compareCopies, knownBuildTime, satisfiesRange } from "../dist/app/discover.js";
 
 /** The line the inspector prints when its server comes up; hasInspector looks for exactly this. */
 const NEEDLE = "[QmlInspector] Inspector server listening on port";
@@ -466,7 +466,7 @@ test("a package missing its declared library is called out, under every name it 
   );
 });
 
-test("a package's dependency list keeps the strings in it and nothing else", () => {
+test("a package's dependency list keeps its names, in either form, and nothing else", () => {
   const root = tmp("sito-lgxdeps-");
   const file = path.join(root, "deps.lgx");
   fs.writeFileSync(
@@ -474,16 +474,21 @@ test("a package's dependency list keeps the strings in it and nothing else", () 
     lgx([
       [
         "manifest.json",
-        JSON.stringify({ name: "deps_app", dependencies: ["medusa_core", 7, null, "wallet", { name: "nested" }] }),
+        JSON.stringify({
+          name: "deps_app",
+          dependencies: ["medusa_core", 7, null, "wallet", { name: "nested" }, { version: "^1" }, ["x"]],
+        }),
       ],
     ]),
   );
 
   const m = readLgxManifest(file);
   // These names go straight into the set of apps the session stages and doctor
-  // resolves; a number or an object in there is a lookup for an app that
-  // cannot exist, and it is printed in the run header as if it were one.
-  assert.deepEqual(m.dependencies, ["medusa_core", "wallet"]);
+  // resolves; a number, or an object with no name, is a lookup for an app that
+  // cannot exist, and it is printed in the run header as if it were one. An
+  // object WITH a name is Basecamp 0.3.0's dependency entry
+  // (readDependencyEntry), and its name is a real dependency.
+  assert.deepEqual(m.dependencies, ["medusa_core", "wallet", "nested"]);
   assert.equal(m.type, "unknown", "a manifest with no type is not assumed to be something Basecamp loads");
   assert.equal(m.name, "deps_app");
 
@@ -578,6 +583,174 @@ test("better() prefers a build over a source tree before it looks at anything el
     false,
     "a build that cannot load does not beat anything",
   );
-  // And between two builds, the newer one still wins.
-  assert.equal(better(app({ built: true, builtAt: 2 }), app({ built: true, builtAt: 1 })), true);
+  // And between two builds, the newer one still wins, when both times are real.
+  const t = Date.UTC(2026, 8, 1);
+  assert.equal(better(app({ built: true, builtAt: t + 60_000 }), app({ built: true, builtAt: t })), true);
+  assert.equal(better(app({ built: true, builtAt: t }), app({ built: true, builtAt: t + 60_000 })), false);
+});
+
+test("1 ms and 2 ms are not build times, and neither ever loses to a known one", () => {
+  // The case above used to be written with builtAt 2 against 1, and passed on
+  // the strength of a comparison between two epoch timestamps. A nix store
+  // dates every file to the epoch, which is how a fresh `result/*.lgx` lost to
+  // an older installed copy: 1970 read as old rather than as unknown.
+  const app = (over) => ({
+    manifest: { name: "demo_core", type: "core", version: "0.5.0", dependencies: [] },
+    artifact: "/x",
+    form: "lgx",
+    built: true,
+    slot: "modules",
+    origin: "x",
+    label: "demo_core",
+    provenance: "local",
+    builtAt: 0,
+    ...over,
+  });
+  assert.equal(knownBuildTime(app({ builtAt: 0 })), null, "0 was never read");
+  assert.equal(knownBuildTime(app({ builtAt: 1 })), null, "1 ms is the store's epoch, not a build");
+  assert.equal(knownBuildTime(app({ builtAt: 86_399_999 })), null, "nor is anything in the first day");
+  assert.equal(knownBuildTime(app({ builtAt: 86_400_000 })), 86_400_000);
+
+  const known = app({ builtAt: Date.now() - 3_600_000, artifact: "/known" });
+  for (const unknown of [app({ builtAt: 1 }), app({ builtAt: 0 })]) {
+    // Whichever side is the incumbent, an unknown time decides nothing: the
+    // incumbent stays and the reason says why.
+    assert.deepEqual(compareCopies(known, unknown), { wins: false, reason: "untimed-tie" });
+    assert.deepEqual(compareCopies(unknown, known), { wins: false, reason: "untimed-tie" });
+  }
+  // Two epoch times are not ordered either; 2 does not beat 1.
+  assert.deepEqual(compareCopies(app({ builtAt: 2 }), app({ builtAt: 1 })), { wins: false, reason: "untimed-tie" });
+});
+
+test("compareCopies applies its rules in order and names why the loser lost", () => {
+  const t = Date.UTC(2026, 8, 1);
+  const app = (over) => ({
+    manifest: { name: "demo_core", type: "core", version: "0.5.0", dependencies: [] },
+    artifact: "/x",
+    form: "dir",
+    built: true,
+    slot: "modules",
+    origin: "x",
+    label: "demo_core",
+    provenance: "local",
+    builtAt: t,
+    ...over,
+  });
+  const v = (version, over = {}) => app({ manifest: { name: "demo_core", type: "core", version, dependencies: [] }, ...over });
+  assert.deepEqual(compareCopies(app(), undefined), { wins: true, reason: null });
+  assert.deepEqual(compareCopies(app({ incomplete: "no library" }), app()), { wins: false, reason: "incomplete" });
+  assert.deepEqual(compareCopies(app(), app({ incomplete: "no library" })), { wins: true, reason: "incomplete" });
+  assert.deepEqual(compareCopies(app({ built: false }), app()), { wins: false, reason: "source-only" });
+  // Version before provenance: a higher installed version beats a local build.
+  assert.deepEqual(
+    compareCopies(v("0.5.0", { provenance: "installed" }), v("0.4.0")),
+    { wins: true, reason: "lower-version" },
+  );
+  // Provenance before time: an installed copy touched later still loses.
+  assert.deepEqual(
+    compareCopies(app({ provenance: "installed", builtAt: t + 86_400_000 }), app()),
+    { wins: false, reason: "installed" },
+  );
+  assert.deepEqual(
+    compareCopies(app({ builtAt: 1 }), app({ provenance: "installed", builtAt: t + 86_400_000 })),
+    { wins: true, reason: "installed" },
+    "an epoch-dated local build beats a newer install of the same version",
+  );
+  // Time last, and only when both are known.
+  assert.deepEqual(compareCopies(app({ builtAt: t + 1000 }), app()), { wins: true, reason: "older" });
+  assert.deepEqual(compareCopies(app(), app({ builtAt: t + 1000 })), { wins: false, reason: "older" });
+});
+
+test("a .lgx manifest is normalised the same way one read off disk is", () => {
+  // readLgxManifest used to hand-roll its own copy of the normaliser, and a
+  // copy drifts: when the real one learned to drop a field whose declared type
+  // the JSON does not honour, a .lgx still handed `"version": 2` through, and
+  // compareVersions — reached just by deciding which of two copies of an app to
+  // run — still died on it with `a.split is not a function`.
+  const root = tmp("sito-lgxtypes-");
+  const file = path.join(root, "bad_types.lgx");
+  fs.writeFileSync(
+    file,
+    lgx([
+      [
+        "manifest.json",
+        JSON.stringify({
+          name: "demo_ui",
+          type: "ui_qml",
+          version: 2,
+          view: 9,
+          display_name: { a: 1 },
+          dependencies: ["medusa_core", 7],
+          // A built manifest ships these and nothing declares them; they stay.
+          hashes: { linux: "abc" },
+        }),
+      ],
+    ]),
+  );
+  const m = readLgxManifest(file);
+  assert.equal(m.version, undefined, "a numeric version must not reach compareVersions");
+  assert.equal(m.view, undefined);
+  assert.equal(m.display_name, undefined);
+  assert.equal(m.name, "demo_ui");
+  assert.deepEqual(m.dependencies, ["medusa_core"], "and the list is still filtered to strings");
+  assert.deepEqual(m.hashes, { linux: "abc" }, "an undeclared key is still carried through");
+  // `better(x, undefined)` returns true before it compares anything, so it would
+  // have passed with this fix deleted. Give it two candidates so the version
+  // tiebreak is actually reached - that is the line that used to throw.
+  const t = Date.UTC(2026, 8, 1);
+  const older = { manifest: m, origin: "a.lgx", form: "lgx", builtAt: t };
+  const newer = { manifest: { ...m, version: "9.9.9" }, origin: "b.lgx", form: "lgx", builtAt: t + 1000 };
+  assert.equal(better(newer, older), true, "a version that is absent rather than a number can be compared at all");
+
+  // A well-formed one is untouched, and a nameless one is still not a manifest.
+  const good = path.join(root, "good.lgx");
+  fs.writeFileSync(good, lgx([["manifest.json", JSON.stringify({ name: "demo_ui", type: "ui_qml", version: "1.2.3" })]]));
+  assert.equal(readLgxManifest(good).version, "1.2.3");
+  const nameless = path.join(root, "nameless.lgx");
+  fs.writeFileSync(nameless, lgx([["manifest.json", JSON.stringify({ type: "ui_qml" })]]));
+  assert.equal(readLgxManifest(nameless), null);
+});
+
+// --- satisfiesRange: the npm-style ranges a 0.3.0 object dependency uses ----
+
+test("satisfiesRange reads exact versions, comparators, caret, tilde and wildcards", () => {
+  // Unreadable input: neither side of the question can be answered.
+  assert.equal(satisfiesRange(undefined, "^1.0.0"), null, "no version to test at all");
+  assert.equal(satisfiesRange("not-a-version", "^1.0.0"), null);
+  assert.equal(satisfiesRange("1.0.0", "not a range!!"), null, "a range this cannot parse either");
+
+  // An exact version, and a partial one read as the range it names.
+  assert.equal(satisfiesRange("1.2.3", "1.2.3"), true);
+  assert.equal(satisfiesRange("1.2.4", "1.2.3"), false);
+  assert.equal(satisfiesRange("1.2.5", "1.2"), true, "1.2 means >=1.2.0 <1.3.0");
+  assert.equal(satisfiesRange("1.3.0", "1.2"), false);
+
+  // Caret: locks the leftmost non-zero component.
+  assert.equal(satisfiesRange("1.5.0", "^1.2.0"), true);
+  assert.equal(satisfiesRange("2.0.0", "^1.2.0"), false);
+  assert.equal(satisfiesRange("1.1.9", "^1.2.0"), false, "below the floor");
+
+  // Tilde: patch-level only.
+  assert.equal(satisfiesRange("1.2.9", "~1.2.0"), true);
+  assert.equal(satisfiesRange("1.3.0", "~1.2.0"), false);
+
+  // Bare comparators.
+  assert.equal(satisfiesRange("2.5.0", ">=1.0.0"), true);
+  assert.equal(satisfiesRange("0.9.0", ">=1.0.0"), false);
+  assert.equal(satisfiesRange("2.0.0", ">1.9"), true);
+  assert.equal(satisfiesRange("1.9.5", ">1.9"), false, "still inside the 1.9.x the comparator names");
+  assert.equal(satisfiesRange("1.0.0", "<=1.0.0"), true);
+  assert.equal(satisfiesRange("1.0.1", "<1.1"), true);
+  assert.equal(satisfiesRange("1.1.0", "<1.1"), false);
+
+  // Wildcards: any component, or the whole range.
+  assert.equal(satisfiesRange("1.9.0", "1.x"), true);
+  assert.equal(satisfiesRange("2.0.0", "1.x"), false);
+  assert.equal(satisfiesRange("9.9.9", "*"), true);
+
+  // Multiple comparators (AND, space-separated) and alternatives (OR, `||`).
+  assert.equal(satisfiesRange("1.5.0", ">=1.0.0 <2.0.0"), true);
+  assert.equal(satisfiesRange("2.5.0", ">=1.0.0 <2.0.0"), false, "readable, just outside both bounds");
+  assert.equal(satisfiesRange("2.0.0", "^1.0.0 || ^2.0.0"), true);
+  assert.equal(satisfiesRange("3.0.0", "^1.0.0 || ^2.0.0"), false);
 });

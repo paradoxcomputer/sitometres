@@ -99,7 +99,7 @@ in `--junit`/`--json`.
 
 ## Writing a spec
 
-Three assertion families. Reach for them in this order:
+Four assertion families. Reach for them in this order:
 
 ```yaml
 app: YOUR_APP_NAME
@@ -134,6 +134,13 @@ calls. Nothing here is specific to any particular app.
   and timeouts inside the step's window, **not** a module returning an error.
   `no_errors:` is on by default; `no_warnings:` is opt-in and catches missing
   assets and binding loops.
+- `file:` — something the app left on disk. `file: "exports/tips.csv"`, or
+  `file: { path: …, contains: … }`, or a list of either. Paths are relative to
+  the throwaway `$HOME` the run gave the app, so the same spec works under
+  `--real-home`. Needs no log evidence. A missing file is a FAIL; a path that
+  cannot be read, or one outside the run's own directories, is INCONCLUSIVE. It
+  proves the file is there, not that this step wrote it — say "the file exists",
+  not "the export worked", unless `contains:` pinned a value the step produced.
 
 ### What a step can do
 
@@ -143,20 +150,35 @@ weaker than the tool allows.
 
 | key | what it does |
 | --- | --- |
-| `open: "App Name"` | open the app from Basecamp's sidebar. First step of most specs. |
+| `open: "App Name"` | open an app from Basecamp's sidebar. First step of most specs. Any UI app the run staged can be named (the spec's own, or one in `with:`), by module name or display label, and opening one moves every later selector and the default `state:`/`eval:` root to it. |
 | `click: <selector>` | click a control. |
 | `type: { into: <selector>, text: "…" }` | type into a field. Also `secret: true`, `clear: false` (append instead of replace), `then: enter\|tab\|none`. |
 | `set: { target: <selector>, property: "…", value: … }` | set a QML property directly, for state a gesture cannot reach. E.g. `set: { target: { objectName: "amountField" }, property: "text", value: "5" }`. |
-| `eval: "<qml expression>"` | evaluate an expression in the app's root. |
+| `eval: "<qml expression>"` | evaluate an expression in the current app's root. `eval: { expr: "…", in: <app> }` evaluates in another app the spec has opened. |
 | `sleep: 3s` | wait a fixed time. A last resort — prefer `waitFor:`. |
 | `waitFor: { … }` | poll the SAME shapes as `expect:` until they come true, bounded by `timeout:`. This is how you wait for a fetch instead of sleeping. |
 | `screenshot: "name"` | capture a PNG into the run's artifacts. |
-| `timeout: 20s` | override the spec-level timeout for this step. |
-| `comment: "# breakpoint: …"` | pause here in `--debug`. |
+| `timeout: 20s` | override the spec-level timeout for this step: its action plus its expectations. On an `open:` step it is the open's budget, honoured exactly. |
+| `command_timeout: 5s` | the longest any one inspector command in this step may block. See "Timeouts" below. |
+| `settle: 3s` | how long this step watches before accepting that something did NOT happen (`no_calls:`, `no_errors:`, `not_text:`). |
+| `comment: "why this step exists"` | prose for whoever reads the report: printed under the step and carried into `--json`. It asserts nothing. `# breakpoint: <why>` also pauses here in `--debug`, and the marker itself is not printed. |
 
 `type:` unlocks anything driven by text — a search box, a URL field, a filter.
 Without it a spec can only click what is already on screen, and whole features
 read as untestable when they are not.
+
+**One spec can cross apps.** A dApp that asks and a wallet that approves is one
+flow: stage the wallet with `with:`, `open:` it to act there, `open:` the dApp
+to come back. `state: { expr: "…", in: <app> }` (and `wait_for:` in the same
+form, and `eval:`) reads another opened app's root while selectors stay in the
+current one. The limits: selectors never cross apps, so open the app you want
+to click in; `in:` before that app's first `open:` is INCONCLUSIVE (`eval:`
+fails); a `with:` app's setup profile runs after its first open, and only a
+profile named for it (`.sitometres/<app>.setup.yaml`, `<app>.setup.yaml`, a
+shipped `profiles/<app>.yaml`) counts; once a second app's dock is open, a
+profile starts inside its own app's dock. `--wallet-password` is only ever used
+through the spec app's own root. `examples/tip_jar_connect.yaml` is the worked
+example: Tip Jar asks, the wallet approves, Tip Jar is connected.
 
 ### Give the spec something stable to assert on
 
@@ -297,7 +319,72 @@ reported as inconclusive rather than dropped.
 Debug mode preserves all sandbox isolation - throwaway HOME and user-dir remain in effect, and cleanup runs normally on quit. Use it to understand the application state at the moment of failure rather than guessing at the cause.
 
 
+## Timeouts
+
+Nothing has a ceiling. Every duration is milliseconds or `500ms`, `30s`, `2m`,
+`1h`, or `none`/`unlimited` for no deadline; a negative or unreadable one is
+refused when the spec loads or the command line is read, before anything
+launches. Most specific wins: the step, then the spec header, then the flag,
+then the default.
+
+| knob | header | step | flag | default |
+| --- | --- | --- | --- | --- |
+| step budget (action + expectations) | `timeout:` | `timeout:` | `--step-timeout` | 30s, or the bridge window + 10s if longer |
+| one inspector command | `command_timeout:` | `command_timeout:` | `--command-timeout` | the step's timeout, never under the bridge window + 10s |
+| bridge reply window | `call_timeout:` | | `--call-timeout` | read from the log, else 20s |
+| opening an app | `open_timeout:` | `timeout:` on the `open:` | `--open-timeout` | 120s |
+| settle before a clean negative check | `settle:` | `settle:` | `--settle` | 1s (crawl: 2.5s) |
+| first paint after the dock appears | `open_settle:` | | | 1.2s |
+| Basecamp startup | `startup_timeout:` | | `--timeout` (also `doctor --deep`) | 120s (30s attached) |
+
+Startup is the exception to "most specific wins": `--timeout` beats
+`startup_timeout:`, because it describes the machine rather than the app.
+
+What to know when you set one:
+
+- **Every command in a step gets the step's `timeout:`.** An `eval:` or a
+  `state:` that makes a synchronous `logos.callModule` holds the GUI thread
+  until the bridge answers, so a slow backend call used to fail at a fixed 20s
+  whatever the spec said. Raise the step's `timeout:` and the call gets it.
+- **The bridge window comes from the log** (`timeout: N` on each synchronous
+  dispatch line), so a Basecamp built with a longer window raises the defaults
+  on its own. Declare `call_timeout:` when the log cannot show it: async-only
+  calls, or `--attach`. Commands outside a step follow it as well: `smoke`,
+  `inspect` and `init` re-read the log before the open, the wallet unlock and
+  each crawl click, unless `--command-timeout` fixes the deadline.
+- **`settle:` is watched in full, whatever the action took.** A clean negative
+  check (`no_calls:`, `no_errors:`, `not_text:`) is not accepted before its
+  settle has passed, even past the step's `timeout:`, because the click's
+  effect may still be on its way. `settle: none` means the step's whole
+  `timeout:`. `run --settle` reaches setup profiles too.
+- **Startup is gated on the shell answering a probe**, not on the "Logos Core
+  started" log line, which some builds never print.
+- **`none` arms no timer.** Neither does anything of 2^31 ms or more, which
+  Node would otherwise fire after about 1 ms. `sleep:`, `open_settle:` and a
+  crawl's `--settle` must end, so they refuse `none`.
+- **A long command deadline delays noticing a hung app by just as long.** A
+  step with `timeout: 30m` lets one frozen `getTree` block for 30 minutes. For a
+  long wait on something slow, pair the long `timeout:` with a short
+  `command_timeout:` so a real hang is still caught quickly.
+- **`open:` is budgeted separately.** A spec-level `timeout:` never shrinks an
+  open, and an open on its own budget is not charged to the step's
+  expectations. `timeout:` on the `open:` step, `open_timeout:` or
+  `--open-timeout` is honoured exactly; the default and `--timeout` reaching the
+  open are floored at 45s.
+
 ## Things that will mislead you
+
+- **Which copy of each app was staged is in the header; read it.** The
+  `staged` lines name every artifact, the app first, with its version, `local`
+  or `installed`, its path, its age and a sha256 prefix of the file Basecamp
+  loads. A local build beats an installed copy of the same version; a HIGHER
+  installed version still wins, and a line under it names the local copy it
+  passed over. `build time unknown` means the nix store dated the file to the
+  epoch and no `result*` link dated it either: it is not "old". Before trusting
+  a verdict about a fresh build, check its line says `local` and names the path
+  you built; `sitometres doctor` prints the same lines without launching, and
+  `doctor --deep` fails if the run staged anything else. The hash identifies the
+  build, it does not vouch for it.
 
 - **A staged source checkout looks like a broken app.** If a repo declares
   `view: qml/Main.qml` and does not contain it, that is a source tree and the
@@ -325,7 +412,8 @@ Debug mode preserves all sandbox isolation - throwaway HOME and user-dir remain 
 - **A failure line names neither module nor method.** sitometres recovers the
   method from the transport line before it, and says so when calls overlapped.
   Treat a hedged attribution as a hint, not a fact.
-- **A timed-out call surfaces after its click.** The transport waits 20s; the
+- **A timed-out call surfaces after its click.** The bridge waits its reply
+  window (20s on stock Basecamp, read from the log when a build raises it); the
   crawl watches 2.5s. These are reconciled at the end, listed separately from
   the per-click grades, and they DO fail the run. A crawl whose table is all
   green can still exit 1 for this reason — read the list.
@@ -351,3 +439,12 @@ install. `doctor --deep` names both in one line. Only then is it the app.
 The report tells you which half you are in. "The plugin IS staged at … so this
 is Basecamp not listing it" means the files are there and Basecamp declined
 them — read the log above. An empty plugin directory means staging failed.
+
+## Basecamp 0.3.0
+
+Supported alongside 0.2.x. sitometres recognises 0.3.0's call-failure wording and turns on the
+log channels 0.3.0 hides (`LOGOS_LOG_LEVEL=debug`, `logos.viewhost.debug=true`) when it launches
+Basecamp; an explicit value of yours wins. If those channels never show, `calls:` on a
+view-module app and `events:` are INCONCLUSIVE, not PASS. Release builds have no inspector:
+use a nix dev build (`.#default`). Off a terminal, progress prints once per phase; set
+`SITOMETRES_PROGRESS=all` for every step.

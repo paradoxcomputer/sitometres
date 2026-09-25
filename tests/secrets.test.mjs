@@ -274,6 +274,7 @@ test("the live status line narrates the step without narrating the password", as
   const written = [];
   const realWrite = process.stderr.write.bind(process.stderr);
   process.env.SITOMETRES_NO_STATUS = "1"; // force the non-TTY path, deterministically
+  process.env.SITOMETRES_PROGRESS = "all"; // per-step narration is what could leak
   process.stderr.write = (chunk) => {
     written.push(String(chunk));
     return true;
@@ -285,8 +286,41 @@ test("the live status line narrates the step without narrating the password", as
   } finally {
     process.stderr.write = realWrite;
     delete process.env.SITOMETRES_NO_STATUS;
+    delete process.env.SITOMETRES_PROGRESS;
   }
   const narration = written.join("");
   assert.ok(narration.includes(`step 1/1: type ${MASK}`), "the step really was narrated");
   assert.ok(!narration.includes(SECRET), "and the password was not");
+});
+
+test("off a TTY, progress is narrated once per phase unless SITOMETRES_PROGRESS=all", () => {
+  // An agent or CI job reading the output pays for every line; per-step narration
+  // was most of a run's output. One line per phase by default, every step on request.
+  const capture = (env) => {
+    const written = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.env.SITOMETRES_NO_STATUS = "1";
+    if (env) process.env.SITOMETRES_PROGRESS = env;
+    process.stderr.write = (chunk) => {
+      written.push(String(chunk));
+      return true;
+    };
+    try {
+      status.start("Preparing", "booting");
+      status.set("Preparing", "staging the app");
+      status.set("Running", "step 1/2: open");
+      status.set("Running", "step 2/2: click");
+      status.stop("Completed");
+    } finally {
+      process.stderr.write = realWrite;
+      delete process.env.SITOMETRES_NO_STATUS;
+      delete process.env.SITOMETRES_PROGRESS;
+    }
+    return written.join("");
+  };
+  const quiet = capture(undefined);
+  assert.equal((quiet.match(/\[Running\]/g) ?? []).length, 1, "one Running line by default");
+  assert.equal((quiet.match(/\[Preparing\]/g) ?? []).length, 1, "one Preparing line by default");
+  const all = capture("all");
+  assert.equal((all.match(/\[Running\]/g) ?? []).length, 2, "every step with SITOMETRES_PROGRESS=all");
 });

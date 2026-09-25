@@ -74,6 +74,41 @@
 //                        sidebar — so 2 is the crawl's first real control.
 //   FAKE_DIE_AFTER_CLICK_MS  answer the Nth click, THEN die — so the crash
 //                        surfaces in the next snapshot rather than in the click
+//   FAKE_EVAL_ECHO_OBJECT  answer an evaluate with `evaluated:<objectId>:<expr>`,
+//                        so a run can show WHICH root an expression reached.
+//                        The default answer stays `evaluated:<expr>`
+//   FAKE_CALL_WINDOW_MS  as the app opens (on the first click), log one
+//                        synchronous dispatch carrying this bridge reply
+//                        window, the way a Basecamp built with a longer
+//                        window does. Nothing fails; the line only says it.
+//
+// DIALECTS. Basecamp 0.3.0 prints several lines differently from 0.2.2, and
+// hides two channels unless the environment turns them on. The default is
+// 0.2.2, so every test written before 0.3.0 existed keeps its meaning.
+//   FAKE_DIALECT         "0.2.2" or "0.3". Set, it also prints the version
+//                        banner Basecamp starts with. "0.3" means:
+//                          * a sync call fails with `callRemoteMethod timed
+//                            out`, not `failed or timed out: <n>`;
+//                          * module-host lines are debug-level, printed only
+//                            when LOGOS_LOG_LEVEL=debug, as liblogos does;
+//                          * ui-host output is printed only when
+//                            QT_LOGGING_RULES enables logos.viewhost.debug,
+//                            in the `logos.viewhost: ui-host X : ...` shape.
+//   FAKE_ECHO_ENV        print the logging switches it was launched with
+//   FAKE_VIEWHOST_APP    a view module: on the first click, print the output
+//                        its ui-host would, in the dialect's shape
+//   FAKE_HANDSHAKE       on 0.3, precede each click's call with the token
+//                        handshake a first call makes (captured lines)
+//   FAKE_HELD_MODULE     on 0.3, a click also makes an async call to this
+//                        module, which is held and then reported unreachable
+//   FAKE_SAY_ON_SIGTERM  print this line when asked to stop, then exit
+//   FAKE_LEAK_STDIO_MS   spawn a grandchild that INHERITS this process's own
+//                        stdout/stderr, ignores SIGTERM, and exits on its own
+//                        after this many ms. Basecamp itself still exits
+//                        cleanly on SIGTERM, so stop()'s waitForExit sees a
+//                        clean exit — but the inherited pipes stay open in the
+//                        grandchild's hands, so drainPipes() cannot see them
+//                        close and must wait out its own timeout instead.
 // ---------------------------------------------------------------------------
 
 import net from "node:net";
@@ -86,6 +121,21 @@ const userDir = userDirAt >= 0 ? process.argv[userDirAt + 1] : "(none)";
 
 /** Basecamp writes its log to stderr; LogRedirector is what puts it there. */
 const say = (line) => process.stderr.write(line + "\n");
+
+const v030 = env.FAKE_DIALECT === "0.3";
+const stamp = () => new Date().toISOString().replace("T", " ").replace("Z", "");
+/** A module host's line, at the level each dialect logs its qDebug at. */
+const hostSay = (module, message) => {
+  if (!v030) say(`[${stamp()}] [info] [logos] [${module}] ${message}`);
+  else if (env.LOGOS_LOG_LEVEL === "debug") say(`[${stamp()}] [debug] [logos] [${module}] Debug: ${message}`);
+};
+/** A view module's ui-host line, where each dialect forwards it (if at all). */
+const uiHostSay = (module, message) => {
+  if (!v030) say(`ui-host [ "${module}" ]: ${JSON.stringify(message)}`);
+  else if (/logos\.viewhost\.debug=true/.test(env.QT_LOGGING_RULES ?? "")) say(`logos.viewhost: ui-host ${module} : ${message}`);
+};
+/** The transport giving up on a synchronous call. */
+const SYNC_FAIL = v030 ? "RemoteLogosObject: callRemoteMethod timed out" : "RemoteLogosObject: callRemoteMethod failed or timed out: 20000";
 
 const DEFAULT_TREE = {
   id: "root",
@@ -130,6 +180,10 @@ let clicks = 0;
 // Shapes taken from src/logs/classify.ts, which is itself measured against the
 // corpus in ~/.local/share/Logos/LogosBasecampDev/logs. A fake that emits lines
 // the classifier does not recognise would test the classifier against itself.
+if (env.FAKE_DIALECT) say(`LogosBasecamp version ${v030 ? "0.3.0" : "0.2.2"} (dev build)`);
+if (env.FAKE_ECHO_ENV) {
+  say(`fake-basecamp env LOGOS_LOG_LEVEL=${env.LOGOS_LOG_LEVEL ?? ""} QT_LOGGING_RULES=${env.QT_LOGGING_RULES ?? ""}`);
+}
 say(`[QmlInspector] Inspector server listening on port ${port}`);
 if (!env.FAKE_QUIET) {
   // The Qt families assessFidelity looks for. Without these it reports "quiet"
@@ -137,6 +191,9 @@ if (!env.FAKE_QUIET) {
   // mode worth testing, hence FAKE_QUIET.
   say("LogosAPIConsumer: requesting token for module");
   say("[LogosObject] registered");
+  // A module host announcing itself, which every real Basecamp's hosts do as
+  // they start: at info on 0.2.2, at debug (so only when asked for) on 0.3.0.
+  hostSay("capability_module", '[LogosProviderObject] LogosAPIProvider: detected LogosProviderPlugin for "capability_module"');
 }
 for (const m of (env.FAKE_MODULES ?? "").split(",").filter(Boolean)) {
   say(`Module loaded: "${m}"`);
@@ -156,9 +213,29 @@ if (env.FAKE_SPAWN_CHILD) {
   say(`spawned module host pid=${child.pid}`);
 }
 
+// A grandchild that inherits OUR stdout/stderr fds and outlives us on
+// purpose: this process still exits cleanly on SIGTERM (so stop() sees
+// `clean === true` and proceeds to drainPipes), but the pipe's write end
+// stays open in the grandchild's hands until it exits on its own, so the
+// parent-side stream never sees 'end'/'close' during the drain window.
+if (env.FAKE_LEAK_STDIO_MS) {
+  const ms = Number(env.FAKE_LEAK_STDIO_MS);
+  spawn(process.execPath, ["-e", `process.on("SIGTERM",()=>{});process.on("SIGINT",()=>{});setTimeout(()=>process.exit(0),${ms})`], {
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+}
+
 // Refuse to go quietly, so stop() has to escalate. That path reports
 // forced: true, and it exists because a hung Qt GUI thread does not answer.
 if (env.FAKE_IGNORE_SIGTERM) process.on("SIGTERM", () => {});
+// Say something on the way out, the way a real Basecamp's QML throws while it
+// tears down, so a test can show those lines still reach the run.
+else if (env.FAKE_SAY_ON_SIGTERM) {
+  process.on("SIGTERM", () => {
+    say(env.FAKE_SAY_ON_SIGTERM);
+    process.exit(0);
+  });
+}
 
 if (env.FAKE_EXIT_AFTER_MS) {
   setTimeout(() => process.exit(Number(env.FAKE_EXIT_CODE ?? 1)), Number(env.FAKE_EXIT_AFTER_MS));
@@ -241,10 +318,18 @@ function handle(command, params) {
       // Logged on the sidebar click so it lands after sitometres started
       // watching but before any control was clicked — no click window owns it,
       // which is exactly what makes it worth reporting separately.
+      if (env.FAKE_VIEWHOST_APP && clicks === 1) {
+        const m = env.FAKE_VIEWHOST_APP;
+        uiHostSay(m, `ui-host: loaded plugin "${m}" from "/tmp/sito-userdir/plugins/${m}/${m}_plugin.so"`);
+        uiHostSay(m, `ui-host: remoting enabled for "${m}"`);
+      }
       if (env.FAKE_OPEN_FAILURE && clicks === 1) {
         say('LogosAPIClient: invoking remote method "demo_core" "loadState" args_count: 0');
         say('RemoteLogosObject::callMethod "loadState" args: 0');
-        say("RemoteLogosObject: callRemoteMethod failed or timed out: 20000");
+        say(SYNC_FAIL);
+      }
+      if (env.FAKE_CALL_WINDOW_MS && clicks === 1) {
+        say(`LogosAPIConsumer: Calling invokeRemoteMethod: "demo_core" "loadState" args_count: 0 timeout: ${env.FAKE_CALL_WINDOW_MS}`);
       }
       // Navigation. A node with `goto` switches which tree is served from here
       // on, so a control queued on one screen really does go out of reach.
@@ -270,6 +355,28 @@ function handle(command, params) {
       }
       // POSTED, not sent: the reply says only that events were enqueued.
       say(`LogosAPIClient: invoking remote method "demo_core" "doThing" args_count: 0`);
+      if (v030 && env.FAKE_HANDSHAKE) {
+        // 0.3.0 mints tokens lazily, per consumer, so a first call starts with
+        // a synchronous requestModule of its own (captured verbatim).
+        say('LogosAPIClient: getToken for module: "demo_core"');
+        say('LogosAPIClient: No token found for module: "demo_core"');
+        say('LogosAPIClient: calling requestModule for "demo_core"');
+        say('LogosAPIClient: getToken for module: "capability_module"');
+        say('LogosAPIClient: Found token for module: "capability_module"');
+        say('LogosAPIConsumer: requestModule for origin: "demo_ui" target: "demo_core" budget: 19997 ms');
+        say('RemoteTransportConnection: Requesting object: "capability_module" at "22:58:45.363"');
+        say('[LogosObject] RemoteLogosObject::callMethod "requestModule" args: 2');
+        say('LogosAPIClient: requestModule result for "demo_core" : "00000000-0000-4000-8000-000000000000"');
+        say('LogosAPIConsumer: Calling invokeRemoteMethod: "demo_core" "doThing" args_count: 0 timeout: 20000');
+      }
+      if (v030 && env.FAKE_HELD_MODULE) {
+        const m = env.FAKE_HELD_MODULE;
+        say(`LogosAPIConsumer: '"${m}"::""' deferred pending the module becoming reachable`);
+        say(
+          `LogosAPIConsumer: '"${m}"::""' still not reachable after 3592 ms -- subscription is DEFERRED, not lost; ` +
+            "it will arm when the module appears. Is the module loaded?",
+        );
+      }
       if (env.FAKE_CLICK_HEDGE) {
         // Two dispatches in flight and one failure: which of them failed cannot
         // be known, so the control must not be accused — the run counts it, the
@@ -277,10 +384,10 @@ function handle(command, params) {
         say(`LogosAPIClient: invoking remote method "demo_core" "alsoThis" args_count: 0`);
         say('RemoteLogosObject::callMethod "doThing" args: 0');
         say('RemoteLogosObject::callMethod "alsoThis" args: 0');
-        say("RemoteLogosObject: callRemoteMethod failed or timed out: 20000");
+        say(SYNC_FAIL);
       } else if (env.FAKE_CLICK_FAILS) {
         say('RemoteLogosObject::callMethod "doThing" args: 0');
-        say("RemoteLogosObject: callRemoteMethod failed or timed out: 20000");
+        say(SYNC_FAIL);
       }
       return { ok: true, posted: 2 };
     }
@@ -300,6 +407,9 @@ function handle(command, params) {
       // The real server evaluates the expression in the object's context. A
       // fake cannot, so it answers truthily and records what it was asked —
       // which is enough to catch the argument-order bug that shipped here.
+      if (env.FAKE_EVAL_ECHO_OBJECT) {
+        return { ok: true, result: `evaluated:${params.objectId ?? ""}:${params.expression}`, undefined: false };
+      }
       return { ok: true, result: `evaluated:${params.expression}`, undefined: false };
 
     case "screenshot":

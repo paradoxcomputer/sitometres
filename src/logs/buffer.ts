@@ -7,6 +7,8 @@
 // step finishes as soon as its evidence lands instead of burning its timeout.
 // ---------------------------------------------------------------------------
 
+import { describeBudget, timerFor } from "../timeouts.js";
+
 export interface LogLine {
   /** Monotonic index within the run, starting at 0. */
   seq: number;
@@ -17,8 +19,9 @@ export interface LogLine {
   text: string;
   /** Which stream carried it. */
   origin: LogOrigin;
-  /** Set when the line was unpacked from a `ui-host [ "<module>" ]: "..."`
-   *  envelope, naming the child view-module process that really emitted it. */
+  /** Set when the line was unpacked from a ui-host envelope, naming the child
+   *  view-module process that really emitted it: `ui-host [ "<module>" ]: "..."`
+   *  on 0.2.2, `logos.viewhost: ui-host <module> : ...` on 0.3.0. */
   viaUiHost?: string;
 }
 
@@ -83,6 +86,10 @@ export class LogBuffer {
    * Resolve with the first line at or after `from` satisfying `test`.
    * Scans what has already arrived before parking, so a cursor taken before a
    * fast action still sees evidence that landed in the meantime.
+   *
+   * `timeoutMs: Infinity` waits for as long as it takes (or until close()); so
+   * does any budget too large for Node to time, rather than overflowing into a
+   * timer that fires at once.
    */
   waitFor(
     test: (line: LogLine) => boolean,
@@ -106,10 +113,10 @@ export class LogBuffer {
         from,
         timer: null,
       };
-      waiter.timer = setTimeout(() => {
+      waiter.timer = timerFor(timeoutMs, () => {
         this.waiters.delete(waiter);
-        reject(new LogWaitError(`no matching log line within ${timeoutMs}ms`, from));
-      }, timeoutMs);
+        reject(new LogWaitError(`no matching log line within ${describeBudget(timeoutMs)}`, from));
+      });
       this.waiters.add(waiter);
     });
   }

@@ -1,0 +1,8 @@
+[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica 115343776
+LogosAPIClient: getToken for module: "package_downloader"
+LogosAPIClient: Found token for module: "package_downloader"
+[LogosObject] LogosAPIConsumer: async calling via LogosObject::callMethodAsync "listRepositories"
+[LogosObject] RemoteLogosObject::callMethodAsync "listRepositories" args: 0
+[2026-09-24 23:03:17.699] [warning] [logos] [capability_module] Warning: QObject::connect: No such signal ::eventResponse(QString,QVariantList)
+RemoteLogosObject: async callMethod timed out
+qml: sito-async-stopped {"error":"Module source unavailable","message":"call to 'package_downloader.listRepositories' timed out after 20000ms","method":"listRepositories","module":"pac

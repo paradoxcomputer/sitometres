@@ -153,6 +153,35 @@ test("a label beside a MouseArea resolves to that MouseArea", () => {
   assert.equal(m.target.type, "QQuickMouseArea");
 });
 
+// A button picked by objectName is the Rectangle that CONTAINS its MouseArea, and the handler of
+// a neighbouring control sits earlier in the same parent. Regression: the click climbed to the
+// parent and took the neighbour's handler (the recovery-phrase box above "I've saved it").
+const OWN_HANDLER_TREE = {
+  id: "1", type: "QWidget", visible: true, enabled: true, children: [
+    { id: "2", type: "QQuickWidget", visible: true, enabled: true, children: [
+      { id: "40", type: "QQuickColumnLayout", visible: true, enabled: true, children: [
+        { id: "41", type: "QQuickRectangle", visible: true, enabled: true, children: [
+          { id: "42", type: "QQuickText", visible: true, objectName: "backupPhraseText", text: "word word word" },
+          { id: "43", type: "QQuickMouseArea", visible: true, enabled: true },
+        ] },
+        { id: "50", type: "QQuickRectangle_QML_124", visible: true, enabled: true, objectName: "backupAckButton", children: [
+          { id: "51", type: "QQuickText", visible: true, text: "I've saved it - open my wallet" },
+          { id: "52", type: "QQuickMouseArea", visible: true, enabled: true },
+        ] },
+      ] },
+    ] },
+  ],
+};
+const own = await UiSnapshot.capture({ getTree: async () => ({ tree: OWN_HANDLER_TREE }) });
+
+test("a control picked by objectName uses its OWN handler, not a neighbour's", () => {
+  const m = resolveOne(own, { objectName: "backupAckButton", clickable: true });
+  assert.equal(m.target.id, "52");
+  assert.equal(m.via, "hitArea");
+  // and its label still resolves to the same handler
+  assert.equal(resolveOne(own, { text: "I've saved it - open my wallet", clickable: true }).target.id, "52");
+});
+
 test("each container's own handler is used, not a neighbour's", () => {
   assert.equal(resolveOne(sib, { text: "Create wallet", clickable: true }).target.id, "12");
   assert.equal(resolveOne(sib, { text: "Restore", clickable: true }).target.id, "22");
