@@ -381,8 +381,14 @@ test("a stopped session lets the process exit", async () => {
     "the child's stdout and stderr are being pumped while the session is up",
   );
   await b.dispose();
+  // A destroyed pipe closes on a later tick, and a neighbouring test's leaked
+  // grandchild can hold its own pipe a moment longer, so allow the count a short
+  // while to settle. A real leak never comes back down.
+  const pipes = () => process.getActiveResourcesInfo().filter((h) => h === "PipeWrap").length;
+  const deadline = Date.now() + 3_000;
+  while (pipes() !== before && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
   assert.equal(
-    process.getActiveResourcesInfo().filter((h) => h === "PipeWrap").length,
+    pipes(),
     before,
     "and released again afterwards — otherwise nothing that embeds this can ever exit",
   );
